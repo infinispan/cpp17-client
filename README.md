@@ -1,5 +1,8 @@
 # Infinispan Hot Rod Client - C++17
 
+[![Build and Test](https://github.com/infinispan/cpp17-client/actions/workflows/build.yml/badge.svg)](https://github.com/infinispan/cpp17-client/actions/workflows/build.yml)
+[![Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/infinispan/cpp17-client/badges/tests.json&label=tests)](https://github.com/infinispan/cpp17-client/actions/workflows/build.yml)
+
 A cross-platform C++17 implementation of the Infinispan Hot Rod protocol client.
 
 🎉 **Smart client** - hash-aware routing, automatic failover, full CRUD +
@@ -115,7 +118,7 @@ ctest -C Release --output-on-failure
 
 ## Testing
 
-### Unit Tests (223 tests)
+### Unit Tests
 ```bash
 cd build
 ./unit_tests
@@ -124,7 +127,7 @@ cd build
 ctest -R UnitTests --output-on-failure
 ```
 
-### Integration Tests (89 tests, 18 suites)
+### Integration Tests
 Requires Docker to run Infinispan server:
 ```bash
 cd build
@@ -162,9 +165,8 @@ _(Step numbers follow [`../hotrod-foundry/ROADMAP.md`](../hotrod-foundry/ROADMAP
 [`docs/STATUS.md`](docs/STATUS.md) is authoritative for which steps are done — not
 any headline count.)_
 
-**Test Results** (verified 2026-09-25):
-- Unit Tests: **223/223 passing** ✅
-- Integration Tests: **89/89 passing** ✅ across 18 suites (against live Infinispan via Docker)
+**Test Results** — see the **Tests** badge at the top of this README (CI-published
+from the actual test run). Integration tests run against live Infinispan via Docker.
 
 ## Features
 
@@ -266,8 +268,8 @@ cpp17-client/
 │   ├── hash/                    # MurmurHash3 + consistent hashing
 │   └── operations/              # Hot Rod operations (with failover)
 ├── tests/                       # Test suite
-│   ├── unit/                    # 223 unit tests
-│   └── integration/             # 89 integration tests, 18 suites (multi-node clusters)
+│   ├── unit/                    # unit tests (gtest)
+│   └── integration/             # integration tests (multi-node clusters, Docker)
 ├── documentation/               # AsciiDoc user guide (index.adoc + topics/)
 ├── examples/                    # Usage examples
 │   └── quickstart/              # Simple GET/PUT/REMOVE + retry + auth examples

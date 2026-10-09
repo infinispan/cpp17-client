@@ -4,7 +4,7 @@
 > If any other doc disagrees with this file, this file wins. Point-in-time
 > snapshots live in [`archive/`](archive/) and are historical only.
 >
-> **Last updated:** 2026-09-25
+> **Last updated:** 2026-10-09
 
 ---
 
@@ -243,16 +243,18 @@ multiplexing. See "Working and shipped" below._
   Docker daemon; Windows doesn't build the integration tests). Windows/MSVC
   portability and `-Werror` build parity also landed (Sept 2026).
 
-**Test status (verified 2026-09-25):**
-- Unit: **223/223** passing (`./build/unit_tests`, <1s) — +19 for the auth work
+**Test status (verified 2026-09-25):** how many tests exist right now is published
+by CI as the README **Tests** badge (see `scripts/count_tests.sh`, which reads the
+counts from the actual test binaries, not a `grep` of the sources) — this section
+describes *what* is covered, not the totals.
+- Unit (`./build/unit_tests`, <1s) — covers the auth work
   (`AuthCodecTest` body round-trips + `SaslAuthenticatorTest`, a parameterized
   SCRAM-SHA-1/256/512 handshake driven by a fake OpenSSL server, plus
-  mech-not-offered / unsupported-mech / bad-server-signature failure paths); the
-  earlier +17 for `ServerSelectionTest` (`orderKeyCandidates` + `unionNodes`,
-  Step 11b slices 1–3; +3 keyless-ordering tests for `selectAnyServer`, Step 11c
-  slice 1) still stands
-- Integration: **89/89** passing across 18 suites (`ctest`, spins up Docker
-  Infinispan single-server + multi-node clusters), now also green on Linux CI.
+  mech-not-offered / unsupported-mech / bad-server-signature failure paths) and
+  `ServerSelectionTest` (`orderKeyCandidates` + `unionNodes`, Step 11b slices 1–3;
+  keyless-ordering for `selectAnyServer`, Step 11c slice 1).
+- Integration (`ctest`, spins up Docker
+  Infinispan single-server + multi-node clusters), green on Linux CI.
   +3 for `RetryViewIntegrationTest` (Step 11b: `excluding()` routes around an
   owner; proxy-disabled owners-exhausted throw; the catch→`excluding(e)` retry
   loop recovers after the primary owner is killed) — verified 3/3 this session.
@@ -268,7 +270,7 @@ multiplexing. See "Working and shipped" below._
   tolerate a GET racing ahead of its PUT — a `nullopt` is expected, only a
   present-but-wrong value is an error.
 - Full run: `ctest --test-dir build --output-on-failure` → 100% pass
-  (19 ctest tests: 1 unit + 18 integration suites)
+  (the unit binary + the integration suites)
 - **Concurrency validated (2026-09-25):** the concurrent suites pass 8/8
   (incl. `ConcurrentWithFailover`), and a ThreadSanitizer run (`build-tsan/`)
   reports **no races in production code** — slice-4's `stateMutex_`/`shared_ptr`

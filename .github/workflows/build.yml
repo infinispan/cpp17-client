@@ -13,6 +13,10 @@ jobs:
     # Integration tests spin up Infinispan Docker containers (single-server
     # plus multi-node clusters), which can take a few minutes to pull and boot.
     timeout-minutes: 30
+    # Needed by the "Publish test-count badge" step to push the generated JSON
+    # to the orphan `badges` branch using the built-in GITHUB_TOKEN.
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -51,6 +55,33 @@ jobs:
       - name: Clean up test containers
         if: always()
         run: ./scripts/cleanup_test_containers.sh || true
+
+      # Publish the real test counts (from the binaries that just passed) as a
+      # shields.io endpoint badge. We render a tiny JSON and force-push it to the
+      # orphan `badges` branch; the README embeds
+      #   img.shields.io/endpoint?url=<raw badges/tests.json>
+      # Only on a push to main (fork-PR runs get a read-only token and must not
+      # publish), so the badge always reflects main — never an in-flight PR.
+      - name: Publish test-count badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          read -r unit integration suites < <(scripts/count_tests.sh build)
+          message="${unit} unit · ${integration} integration"
+          echo "Badge: ${message} (${suites} suites)"
+          work="$(mktemp -d)"
+          printf '{"schemaVersion":1,"label":"tests","message":"%s","color":"brightgreen"}\n' \
+            "$message" > "$work/tests.json"
+          cd "$work"
+          git init -q
+          git checkout -q -b badges
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests.json
+          git commit -q -m "ci: test-count badge — ${unit} unit, ${integration} integration"
+          git push -q --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
 
   test-windows:
     name: Windows
