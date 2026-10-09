@@ -42,6 +42,27 @@ public:
      */
     RemoteCache(const std::string& host, uint16_t port, const std::string& cacheName);
 
+    /**
+     * Create a client from a Hot Rod URI (issue #9).
+     *
+     * Grammar: hotrod://[user:password@]host1[:port1][,host2...][?k=v&...]
+     * The returned client is configured but NOT connected — call connect() on it.
+     * Because RemoteCache is non-movable (it owns a mutex), this returns a
+     * unique_ptr rather than a value.
+     *
+     * v1 scope (see HotRodURI / issue #10 for what is deferred): only the
+     * hotrod:// scheme; the first host is used as the seed (topology discovery
+     * finds the rest); credentials enable SCRAM; the client_intelligence,
+     * protocol_version, and sasl_mechanism query parameters are honoured, any
+     * other parameter (or hotrods:// / TLS) throws.
+     *
+     * @param uri       Hot Rod URI string
+     * @param cacheName Cache to operate on (the URI path is not used for this)
+     * @throws HotRodClientException on a malformed or unsupported URI
+     */
+    static std::unique_ptr<RemoteCache> fromUri(const std::string& uri,
+                                                const std::string& cacheName = "");
+
     ~RemoteCache();
 
     /**
