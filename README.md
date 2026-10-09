@@ -115,7 +115,7 @@ ctest -C Release --output-on-failure
 
 ## Testing
 
-### Unit Tests (223 tests)
+### Unit Tests (250 tests)
 ```bash
 cd build
 ./unit_tests
@@ -124,7 +124,7 @@ cd build
 ctest -R UnitTests --output-on-failure
 ```
 
-### Integration Tests (89 tests, 18 suites)
+### Integration Tests (92 tests, 19 suites)
 Requires Docker to run Infinispan server:
 ```bash
 cd build
@@ -153,8 +153,9 @@ ctest --output-on-failure
 **Current Progress**: Full CRUD (PING/GET/PUT/REMOVE) + SCRAM auth + topology
 awareness + hash-aware routing + async multiplexing + metadata/version-based
 operations (Step 10) + typed error handling and user-decided retry, keyed and
-keyless (Step 11) — all shipped. **Next:** bulk operations (Step 12) or
-multiplexing benchmarks. See [docs/STATUS.md](docs/STATUS.md) for live status.
+keyless (Step 11) + Hot Rod URI support (`RemoteCache::fromUri`, issue #9) — all
+shipped. **Next:** bulk operations (Step 12) or multiplexing benchmarks. See
+[docs/STATUS.md](docs/STATUS.md) for live status.
 Per-step milestone history (frozen at Step 9) is archived at
 [docs/archive/PROGRESS.md](docs/archive/PROGRESS.md).
 
@@ -162,9 +163,9 @@ _(Step numbers follow [`../hotrod-foundry/ROADMAP.md`](../hotrod-foundry/ROADMAP
 [`docs/STATUS.md`](docs/STATUS.md) is authoritative for which steps are done — not
 any headline count.)_
 
-**Test Results** (verified 2026-09-25):
-- Unit Tests: **223/223 passing** ✅
-- Integration Tests: **89/89 passing** ✅ across 18 suites (against live Infinispan via Docker)
+**Test Results** (verified 2026-10-09):
+- Unit Tests: **250/250 passing** ✅
+- Integration Tests: **92/92 passing** ✅ across 19 suites (against live Infinispan via Docker)
 
 ## Features
 
@@ -193,6 +194,9 @@ any headline count.)_
 - ✅ **SASL/SCRAM authentication** (`setAuthentication(...)`) — end-to-end for the
   SCRAM family (`SCRAM-SHA-1`/`SCRAM-SHA-256`/`SCRAM-SHA-512`), applied to every
   connection; see [`documentation/topics/security.adoc`](documentation/topics/security.adoc)
+- ✅ **Hot Rod URI** (`RemoteCache::fromUri("hotrod://...")`) — build a client from a
+  connection string (hosts, credentials, `sasl_mechanism`/`client_intelligence`/
+  `protocol_version` params); `hotrod://` only for now (TLS and more in issue #10)
 - ✅ **Integration test framework** (GoogleTest + Docker + multi-node clusters)
 
 ### Full CRUD with Smart Routing and Async Operations
@@ -227,6 +231,25 @@ if (result.has_value()) {
 for (int i = 0; i < 1000; i++) {
     cache.put(keys[i], values[i]);  // returns immediately, executes concurrently
 }
+```
+
+### Connect from a Hot Rod URI
+```cpp
+// hotrod://[user:password@]host1[:port1][,host2[:port2]...][?k=v&...]
+// Returns a configured, not-yet-connected client (RemoteCache owns a mutex, so
+// it is non-movable → unique_ptr). Call connect() yourself.
+auto cache = RemoteCache::fromUri(
+    "hotrod://user:pass@node1:11222,node2:11222"
+    "?sasl_mechanism=SCRAM-SHA-256&client_intelligence=hash_distribution_aware",
+    "my-cache");
+cache->connect();
+
+// v1 supports hotrod:// only; the first host seeds the topology, credentials
+// enable SCRAM, and sasl_mechanism/client_intelligence/protocol_version (Java
+// "4.0"/"4.1" form) are honoured. Userinfo and query values are percent-decoded
+// (RFC 3986), so a reserved character in a password is written encoded — e.g. a
+// password of p@ss is "...://admin:p%40ss@host". hotrods:// (TLS), timeouts, and
+// other parameters throw for now (see issue #10).
 ```
 
 ### Future
@@ -267,7 +290,7 @@ cpp17-client/
 │   └── operations/              # Hot Rod operations (with failover)
 ├── tests/                       # Test suite
 │   ├── unit/                    # 223 unit tests
-│   └── integration/             # 89 integration tests, 18 suites (multi-node clusters)
+│   └── integration/             # 92 integration tests, 19 suites (multi-node clusters)
 ├── documentation/               # AsciiDoc user guide (index.adoc + topics/)
 ├── examples/                    # Usage examples
 │   └── quickstart/              # Simple GET/PUT/REMOVE + retry + auth examples

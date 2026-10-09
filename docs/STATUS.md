@@ -4,7 +4,7 @@
 > If any other doc disagrees with this file, this file wins. Point-in-time
 > snapshots live in [`archive/`](archive/) and are historical only.
 >
-> **Last updated:** 2026-09-25
+> **Last updated:** 2026-10-09
 
 ---
 
@@ -33,6 +33,24 @@ _(Full per-session workflow: [`WORKFLOW.md`](WORKFLOW.md).)_
 
 _The 1–3 concrete things to do next. Keep this short and current._
 
+0. **Hot Rod URI support COMPLETE (issue #9).** `RemoteCache::fromUri(uri,
+   cacheName="")` builds a configured (not-yet-connected) client from a
+   `hotrod://[user:password@]host1[:port1][,host2...][?k=v&...]` connection
+   string; returns a `std::unique_ptr<RemoteCache>` (RemoteCache owns a mutex, so
+   it is non-movable). Parsing lives in a pure, header-only `HotRodURI::parse()`
+   (`include/hotrod/HotRodURI.h`, 27 unit tests). v1 scope: `hotrod://` only;
+   first host is the seed (topology discovery finds the rest); credentials enable
+   SCRAM; userinfo and query values are percent-decoded (RFC 3986, java.net.URI
+   parity — so an `@`/`/`/`:` in a password written `%40`/`%2F`/`%3A` reaches the
+   client as its real bytes); query whitelist `sasl_mechanism` /
+   `client_intelligence` /
+   `protocol_version` (Java `"4.0"`/`"4.1"` form, case-insensitive intelligence).
+   Anything unsupported throws a clear `HotRodClientException` (BeforeSend):
+   `hotrods://`/TLS, unknown params (`connect_timeout`, `socket_timeout`,
+   `use_ssl`, `token`, …), `protocol_version=AUTO`/3.x. Deferred features tracked
+   in **issue #10**. Rationale in [`DECISIONS.md`](DECISIONS.md) (2026-10-09).
+   **Next: pick a roadmap step — Step 12 (bulk ops) or benchmark the multiplexing
+   path.**
 1. **SASL/SCRAM authentication COMPLETE — end-to-end for the whole SCRAM
    family.** `RemoteCache::setAuthentication(username, password, realm="default",
    serverName="infinispan", mechanism="SCRAM-SHA-256")` (flat setter, matching
@@ -181,7 +199,14 @@ pull from here next. Step numbers follow
   concurrent throughput; unmeasured so far.
 - [ ] **Code cleanup:** read header "other params" when `paramCount > 0`
   (`src/operations/RemoteCache.cpp:140,182`).
-- [ ] **TLS/SSL support** (transport encryption).
+- [x] **Hot Rod URI support (`fromUri`)** — **shipped 2026-10-09** (issue #9, 27
+  unit tests). See *Working and shipped*.
+- [ ] **Hot Rod URI — deferred features (issue #10):** `hotrods://`/TLS +
+  cert/SNI/hostname-validation params, `connect_timeout`/`socket_timeout`,
+  multi-server seed list (startup failover across seeds), non-SCRAM SASL
+  (PLAIN/OAUTHBEARER `token`), `protocol_version=AUTO`/3.x. Each drops its
+  "unsupported" throw from `HotRodURI::parse` once the capability lands.
+- [ ] **TLS/SSL support** (transport encryption). Also unblocks `hotrods://` above.
 
 **Longer horizon (Step 14+ advanced features):** transactions (XA), client
 listeners/events, counters, Ickle queries, streaming ops (4.1+), multimap,
@@ -197,6 +222,13 @@ multiplexing. See "Working and shipped" below._
 ## Current state (verified against code, 2026-09-16)
 
 **Working and shipped:**
+- **Hot Rod URI (`RemoteCache::fromUri`)** — build a configured client from a
+  `hotrod://[user:pass@]host[:port][,host...][?k=v]` connection string (issue #9);
+  pure header-only parser `HotRodURI::parse` (`include/hotrod/HotRodURI.h`).
+  `hotrod://` scheme only, first host seeds the topology, SCRAM via credentials,
+  `sasl_mechanism`/`client_intelligence`/`protocol_version` params; userinfo and
+  query values are percent-decoded (java.net.URI parity); unsupported
+  schemes/params throw. TLS/timeouts/multi-seed/non-SCRAM deferred (issue #10)
 - Wire primitives (vInt, vLong, strings, byte arrays)
 - Protocol 4.0 headers (all conditional fields)
 - **SASL/SCRAM authentication (end-to-end)** — `setAuthentication(...)` runs the
@@ -243,16 +275,30 @@ multiplexing. See "Working and shipped" below._
   Docker daemon; Windows doesn't build the integration tests). Windows/MSVC
   portability and `-Werror` build parity also landed (Sept 2026).
 
-**Test status (verified 2026-09-25):**
-- Unit: **223/223** passing (`./build/unit_tests`, <1s) — +19 for the auth work
+**Test status (verified 2026-10-09):**
+- Unit: **250/250** passing (`./build/unit_tests`, <1s) — +27 for the Hot Rod URI
+  parser (`HotRodURITest`: grammar, multi-host, userinfo, the typed query
+  whitelist, port trailing-garbage rejection, RFC-3986 percent-decoding of
+  userinfo/query values + malformed-escape rejection, and explicit rejection of
+  `hotrods://`/unknown-param/`AUTO`-3.x). The
+  +19 for the auth work
   (`AuthCodecTest` body round-trips + `SaslAuthenticatorTest`, a parameterized
   SCRAM-SHA-1/256/512 handshake driven by a fake OpenSSL server, plus
   mech-not-offered / unsupported-mech / bad-server-signature failure paths); the
   earlier +17 for `ServerSelectionTest` (`orderKeyCandidates` + `unionNodes`,
   Step 11b slices 1–3; +3 keyless-ordering tests for `selectAnyServer`, Step 11c
   slice 1) still stands
-- Integration: **89/89** passing across 18 suites (`ctest`, spins up Docker
+- Integration: **92/92** passing across 19 suites (`ctest`, spins up Docker
   Infinispan single-server + multi-node clusters), now also green on Linux CI.
+  +2 for `FromUriIntegrationTest` (issue #9: a client built via `fromUri` round-trips
+  a value; a `?protocol_version=4.0` query param flows through to a working client)
+  and +1 for `AuthIntegrationTest.FromUriWithCredentialsAuthenticates` (credentials
+  carried in the URI authenticate end-to-end) — verified live this session. These
+  prove the `fromUri` parse→setter→connect→op chain; exhaustive parsing coverage
+  stays in the pure unit tests. (Hash-aware `client_intelligence` via URI is NOT
+  integration-tested on the single-server fixture — the Dockerized single node
+  advertises internal container addresses, so routing tests use the multi-server
+  suites; see DECISIONS 2026-10-09.)
   +3 for `RetryViewIntegrationTest` (Step 11b: `excluding()` routes around an
   owner; proxy-disabled owners-exhausted throw; the catch→`excluding(e)` retry
   loop recovers after the primary owner is killed) — verified 3/3 this session.
@@ -289,6 +335,7 @@ full list (Steps 10–12, benchmarks, TLS, code TODOs).
 | What | Where |
 |------|-------|
 | Public API | `include/hotrod/RemoteCache.h` |
+| Hot Rod URI parser | `include/hotrod/HotRodURI.h` (pure); factory `RemoteCache::fromUri` |
 | Authentication (SASL/SCRAM) | `include/hotrod/Authentication.h`, `AuthCodec.h`, `SaslAuthenticator.h`; `src/auth/SaslAuthenticator.cpp`, `SCRAM.cpp` |
 | User guide (AsciiDoc) | `documentation/index.adoc` + `documentation/topics/` |
 | Retry API (bound view) | `include/hotrod/RetryView.h`, `RetryContext.h`; routing helpers in `ServerSelection.h` |
