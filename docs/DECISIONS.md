@@ -704,3 +704,160 @@ all green live against a Dockerized auth-enabled Infinispan 16.0.7. Documented i
 `documentation/topics/security.adoc` (new AsciiDoc user guide,
 `documentation/index.adoc`) with a runnable snippet in
 `examples/quickstart/README.md`.
+
+## 2026-10-09 — Hot Rod URI support (`RemoteCache::fromUri`) — issue #9
+
+**What shipped.** A connection-string entry point, requested in issue #9 by
+Tristan Tarrant (linking the .NET client's "create from URI" docs). New pure,
+header-only parser `HotRodURI::parse()` (`include/hotrod/HotRodURI.h`, following
+the `ServerSelection.h` / `AuthCodec.h` inline precedent) turns a
+`hotrod://[user:password@]host1[:port1][,host2...][?k=v&...]` string into a
+validated value object; `RemoteCache::fromUri(uri, cacheName="")` consumes it and
+applies the existing flat setters. +20 unit tests (`HotRodURITest`), full suite
+243/243, Release `-Werror` clean. No integration test: parsing is pure
+(unit-covered) and `fromUri` only wires existing, already-integration-tested
+setters.
+
+**Authoritative behaviour is the Java `HotRodURI`, not the .NET docs** (AGENTS.md
+source order). Reading `org.infinispan.client.hotrod.impl.HotRodURI` +
+`ConfigurationProperties` + `ProtocolVersion` surfaced one real divergence from
+the .NET docs the issue links:
+- **`protocol_version` value form.** The .NET docs show `version40`/`version41`.
+  Java's `ProtocolVersion.parseVersion` matches the `"major.minor"` text form
+  (`"4.0"`, `"4.1"`, `"AUTO"`). We follow Java → `?protocol_version=4.0`.
+- Java query params are generic: every `k=v` is prefixed with
+  `infinispan.client.hotrod.` and dumped into a `Properties` bag that the
+  `ConfigurationBuilder` later reads, silently ignoring unknowns. We have no such
+  property bag (typed flat setters only), so a translation table is unavoidable —
+  the "generic passthrough" shortcut doesn't exist for us.
+- `client_intelligence` values are the enum names (`BASIC`/`TOPOLOGY_AWARE`/
+  `HASH_DISTRIBUTION_AWARE`), parsed case-insensitively in Java; we match that.
+
+**Decisions (agreed with the user).**
+1. **Returns `std::unique_ptr<RemoteCache>`, not a value.** `RemoteCache` owns a
+   `std::mutex` (`stateMutex_`, Step 11b slice 4), so it is non-movable and cannot
+   be returned by value. The client is returned **not-yet-connected** — the
+   caller still calls `connect()`, matching the existing constructor flow.
+2. **v1 scope: parse the whole URI, wire only what the client supports today,
+   throw clearly on the rest.** Only `hotrod://`; the first host seeds the
+   topology (the rest are parsed into `servers` but unused for now — topology
+   discovery finds them); credentials enable SCRAM; query whitelist is
+   `sasl_mechanism` / `client_intelligence` / `protocol_version`.
+3. **Throw on unknown/unsupported, do NOT silently ignore (diverges from Java).**
+   Consistent with the explicit-error choice for the scheme: an unknown param or a
+   bad value for a known param throws `HotRodClientException{BeforeSend}` rather
+   than being dropped, so a user who sets `socket_timeout` isn't silently ignored.
+   Trade-off: less forward-compatible than Java's ignore-unknowns, but fail-fast
+   and honest about the gap. `BeforeSend` is the phase for a construction-time
+   error (nothing was sent).
+4. **Exception messages stay generic — no GitHub issue numbers in them** (user
+   directive: avoid having to maintain those references in code). The deferred
+   list lives in **issue #10**, not in the throw strings.
+
+**Deferred to issue #10** (each drops its "unsupported" throw as the capability
+lands): `hotrods://`/TLS + cert/SNI/hostname-validation params,
+`connect_timeout`/`socket_timeout`, multi-server seed list (startup failover
+across seeds), non-SCRAM SASL (PLAIN/OAUTHBEARER `token`),
+`protocol_version=AUTO`/3.x.
+
+**Aside (not changed here).** `CMakeLists.txt` links `OpenSSL::SSL` as well as
+`OpenSSL::Crypto`, but the code only uses libcrypto (EVP/HMAC/PBKDF2 for SCRAM) —
+the data socket is plain TCP (`Connection.cpp`: `SOCK_STREAM`, `::connect`,
+`::send`/`::recv`, no `SSL_*`). Confirms STATUS.md's "no TLS". The `OpenSSL::SSL`
+link is dead weight; left as a possible future cleanup, folded into the TLS work.
+
+## 2026-10-09 — Hot Rod URI: end-to-end integration coverage + a single-server caveat
+
+**What shipped (same session as the parser).** The pure unit tests
+(`HotRodURITest`, 20 cases) cover URI string→fields exhaustively, but nothing
+proved a client *built from a URI* actually connects and operates. Added that
+end-to-end proof:
+- `tests/integration/FromUriIntegrationTest.cpp` (single-server, 2 tests): a plain
+  `hotrod://host:port` client round-trips a value; a `?protocol_version=4.0` client
+  reports `VERSION_40` **and** round-trips (proves a query param flows all the way
+  to a working client).
+- `AuthIntegrationTest.FromUriWithCredentialsAuthenticates`: credentials +
+  `?sasl_mechanism=SCRAM-SHA-256` in the URI authenticate end-to-end against the
+  auth server (reuses the existing `AuthServerEnvironment`, no new auth executable).
+
+Integration: 89→92 across 19 suites; all verified live this session.
+
+**Deliberately NOT done: convert the whole test suite to build clients via
+`fromUri`.** Tempting ("then parsing is always exercised"), rejected because (1)
+the URI can't express every config — `realm`, `serverName`, `proxyToNonOwner`,
+`cacheName` (the path is ignored; cache is a separate `fromUri` arg); (2) it would
+couple dozens of unrelated tests to the parser, so a parser change could redden
+the whole suite — the opposite of the "cheap re-orientation" goal; (3) most tests
+use a stack `RemoteCache` while `fromUri` returns a `unique_ptr`. The pure unit
+test is the right home for exhaustive parsing coverage; integration only needs the
+one end-to-end chain proof.
+
+**Caveat found: `client_intelligence=hash_distribution_aware` can't be
+integration-tested on the single-server fixture.** The first draft of the second
+test used that param and failed with `ISPN006017 Operation 'GET' requires
+authentication`. Cause: the Dockerized single node (started with `-p 0:11222`,
+ephemeral host port) advertises its *internal* container address in the topology,
+so a hash-aware client reconnects to an address that, from the host, resolved to a
+different server (the host's `ispn-demo`/memory-service on 11222, which requires
+auth). This is the same "topology reports internal container addresses" limitation
+already recorded for the retry suites (2026-09-25, Step 11c slice 2), not a client
+bug. Hash-aware routing is therefore exercised only by the **multi-server** suites;
+the single-server `FromUri` test uses the routing-neutral `protocol_version`
+instead. (All other single-server suites likewise use BASIC intelligence.)
+
+## 2026-10-09 — Hot Rod URI: port parser rejected trailing garbage (stoi gap)
+
+**Bug fixed.** `HotRodURI::parse()` parsed the port with `std::stoi(portStr)`, which
+stops at the first non-digit and returns the leading number without error — so
+`hotrod://host:8080x` silently became port `8080`, and `:80 ` (trailing space) was
+accepted too. Java's authoritative parser uses `Integer.parseInt`, which throws on
+any non-numeric content. Fixed by passing the `pos` out-param
+(`std::stoi(portStr, &consumed)`) and failing unless `consumed == portStr.size()`,
+so the whole token must be digits. The range check (`1..65535`) is unchanged.
+New unit test `HotRodURITest.PortWithTrailingGarbageThrows` (`:8080x`, `:80 `);
+suite 243→244. Found during a post-merge review of issue #9.
+
+## 2026-10-09 — Hot Rod URI: percent-decode userinfo + query values (RFC 3986)
+
+**Bug fixed.** `HotRodURI::parse()` operated on the raw URI substrings end to end
+— no `%XX` decoding anywhere. The Java client parses through `java.net.URI` and
+reads the *decoded* `getUserInfo()`/`getQuery()`, so the two diverged for any
+component carrying a URI-reserved or non-ASCII character. The reserved characters
+`@` and `:` are the userinfo/host and user/pass delimiters, so a password
+containing them (e.g. `p@ss`) has only one legal URI form — percent-encoded
+(`hotrod://admin:p%40ss@node`). Java decoded that back to `p@ss`; this parser
+handed the literal string `p%40ss` to `setAuthentication`, so SCRAM hashed the
+wrong secret → `ISPN006017 ... requires authentication`. There was no workaround
+(a literal `@` in the password misparses the authority), so credentials with
+reserved characters were simply unexpressible through `fromUri`. Found during a
+post-merge review of issue #9.
+
+**Fix.** Added a header-only `percentDecode()` helper (`%XX` → byte, everything
+else verbatim) and applied it to username, password, and query-parameter values.
+Query *keys* stay raw — they are matched against the fixed whitelist names, none
+of which contain escapable characters. Suite 244→250 (+6:
+`PasswordPercentDecoded`, `UsernamePercentDecoded`, `EncodedColonInPasswordPreserved`,
+`PercentDecodeLowercaseHex`, `QueryValuePercentDecoded`, `MalformedPercentEscapeThrows`).
+Release `-Werror` clean.
+
+**Decisions.**
+1. **Decode after the raw split, not before (diverges from Java, deliberately).**
+   Userinfo is split into user/pass on the *raw* string (so an encoded `@`/`:`
+   isn't mistaken for a delimiter), then each half is decoded. Java instead
+   decodes the whole userinfo then `split(":")`, which truncates a password at a
+   decoded `:` and drops the tail — a real Java limitation. Splitting first
+   preserves `pa%3Ass` → `pa:ss`. For every character that is *not* a colon the
+   two orders agree, so this only improves the colon case. (`EncodedColonInPasswordPreserved`
+   locks it in.)
+2. **`+` is left as-is, NOT mapped to space.** `java.net.URI` does not treat `+`
+   as a space — that is `application/x-www-form-urlencoded`, not RFC 3986 URI
+   decoding. Mapping it would *break* Java parity.
+3. **Malformed escapes throw** (`%` not followed by two hex digits), matching
+   `java.net.URI`'s parse-time rejection and this parser's fail-fast stance,
+   rather than passing a stray `%` through. `BeforeSend` phase (construction-time).
+
+**Note.** The three whitelisted query values (`sasl_mechanism`,
+`client_intelligence`, `protocol_version`) never contain escapable characters
+today, so decoding them is currently a no-op; it is done anyway for Java parity
+and to be ready for issue #10's `token=` (OAUTHBEARER), whose values can carry
+`=`/`+`/`/`.

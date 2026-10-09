@@ -93,6 +93,7 @@ if(GTest_FOUND)
         tests/unit/ErrorHandlingTest.cpp
         tests/unit/ServerSelectionTest.cpp
         tests/unit/AuthCodecTest.cpp
+        tests/unit/HotRodURITest.cpp
         tests/unit/SaslAuthenticatorTest.cpp
     )
 
@@ -162,6 +163,11 @@ if(GTest_FOUND)
 
     add_executable(errorhandling_integration_tests
         tests/integration/ErrorHandlingIntegrationTest.cpp
+    )
+
+    # Hot Rod URI end-to-end (single server) — fromUri parse->connect->op chain
+    add_executable(fromuri_integration_tests
+        tests/integration/FromUriIntegrationTest.cpp
     )
 
     # Topology integration tests (multi-server cluster)
@@ -325,6 +331,13 @@ if(GTest_FOUND)
             # Note: NOT gtest_main - we provide our own main()
     )
 
+    target_link_libraries(fromuri_integration_tests
+        PRIVATE
+            hotrod-client
+            GTest::gtest
+            # Note: NOT gtest_main - we provide our own main()
+    )
+
     add_test(NAME PingIntegrationTests COMMAND ping_integration_tests)
     add_test(NAME GetIntegrationTests COMMAND get_integration_tests)
     add_test(NAME GetWithMetadataIntegrationTests COMMAND getwithmetadata_integration_tests)
@@ -336,6 +349,7 @@ if(GTest_FOUND)
     add_test(NAME ReplaceIntegrationTests COMMAND replace_integration_tests)
     add_test(NAME ContainsKeyIntegrationTests COMMAND containskey_integration_tests)
     add_test(NAME ErrorHandlingIntegrationTests COMMAND errorhandling_integration_tests)
+    add_test(NAME FromUriIntegrationTests COMMAND fromuri_integration_tests)
     add_test(NAME TopologyIntegrationTests COMMAND topology_integration_tests)
     add_test(NAME ConcurrentClientsTests COMMAND concurrent_clients_tests)
     add_test(NAME HashAwareRoutingIntegrationTests COMMAND hash_aware_routing_integration_tests)
@@ -386,6 +400,10 @@ if(GTest_FOUND)
         LABELS "integration;docker"
     )
     set_tests_properties(ErrorHandlingIntegrationTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        LABELS "integration;docker"
+    )
+    set_tests_properties(FromUriIntegrationTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         LABELS "integration;docker"
     )
