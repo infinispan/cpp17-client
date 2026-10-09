@@ -3,6 +3,7 @@
 #include "hotrod/Codec.h"
 #include "hotrod/HotRodClientException.h"
 #include "hotrod/ServerSelection.h"
+#include "hotrod/HotRodURI.h"
 #include <stdexcept>
 #include <set>
 #include <algorithm>
@@ -55,6 +56,44 @@ namespace hotrod
          this->handleTopologyUpdate(topo, cacheName);
       };
       connection_ = std::make_shared<MultiplexedConnection>(host, port, topologyCallback);
+   }
+
+   std::unique_ptr<RemoteCache> RemoteCache::fromUri(const std::string &uri,
+                                                     const std::string &cacheName)
+   {
+      // Pure parse + validation (throws on anything malformed or unsupported).
+      const HotRodURI parsed = HotRodURI::parse(uri);
+
+      // v1: the first host is the seed; topology discovery finds the rest (#10).
+      const ServerAddress &seed = parsed.seed();
+      auto cache = std::make_unique<RemoteCache>(seed.host, seed.port, cacheName);
+
+      if (parsed.clientIntelligence)
+      {
+         cache->setClientIntelligence(*parsed.clientIntelligence);
+      }
+      if (parsed.protocolVersion)
+      {
+         cache->setProtocolVersion(*parsed.protocolVersion);
+      }
+      if (parsed.username)
+      {
+         // Credentials present -> enable SCRAM. Mechanism from the query if given,
+         // else the setAuthentication default (SCRAM-SHA-256). Non-SCRAM mechanisms
+         // are rejected later at connect().
+         const std::string password = parsed.password.value_or("");
+         if (parsed.saslMechanism)
+         {
+            cache->setAuthentication(*parsed.username, password, "default",
+                                     "infinispan", *parsed.saslMechanism);
+         }
+         else
+         {
+            cache->setAuthentication(*parsed.username, password);
+         }
+      }
+
+      return cache;
    }
 
    RemoteCache::~RemoteCache()

@@ -150,6 +150,29 @@ TEST(AuthIntegrationTest, NoCredentialsFails) {
     cache.disconnect();
 }
 
+// 4. Credentials carried in a Hot Rod URI authenticate end-to-end (issue #9).
+//    Proves the fromUri() parse -> setAuthentication -> connect -> op chain, with
+//    the SASL mechanism supplied as a query parameter.
+TEST(AuthIntegrationTest, FromUriWithCredentialsAuthenticates) {
+    const std::string uri =
+        "hotrod://" + AuthServerEnvironment::user + ":" + AuthServerEnvironment::pass +
+        "@" + AuthServerEnvironment::host + ":" + std::to_string(AuthServerEnvironment::port) +
+        "?sasl_mechanism=SCRAM-SHA-256";
+
+    auto cache = RemoteCache::fromUri(uri, kAuthCache);
+    cache->connect();
+
+    const ByteArray key{'u', 'r', 'i', 'a', 'u', 't', 'h'};
+    const ByteArray value{'v', '1'};
+    cache->put(key, value).get();
+    auto got = cache->get(key).get();
+
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(*got, value);
+
+    cache->disconnect();
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     ::testing::AddGlobalTestEnvironment(new AuthServerEnvironment());
