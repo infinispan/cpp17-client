@@ -704,3 +704,46 @@ all green live against a Dockerized auth-enabled Infinispan 16.0.7. Documented i
 `documentation/topics/security.adoc` (new AsciiDoc user guide,
 `documentation/index.adoc`) with a runnable snippet in
 `examples/quickstart/README.md`.
+
+## 2026-10-09 — CI-published test-count badge (stop hand-maintaining counts)
+
+**Problem.** The unit/integration test counts were hand-typed in ~6 places across
+`README.md` and `docs/STATUS.md`. Every test change meant editing all of them, and
+nothing verified the numbers — one README spot had silently drifted to `223 unit
+tests` while the real count moved on. The counts also aren't cheaply derivable: a
+static `grep -c 'TEST('` over `tests/unit` reports **253**, but only **244**
+actually run (parameterized/disabled macros expand differently), so naive
+automation would lie.
+
+**Decision.** Compute the counts from the *built test binaries* in CI and surface
+them as a shields.io badge, so the README number is generated, never typed.
+- `scripts/count_tests.sh [build-dir]` prints `"<unit> <integration> <suites>"`.
+  It counts via `--gtest_list_tests` on each binary (listing doesn't execute, so
+  no Docker needed) and discovers the integration binaries by their ctest
+  **`integration` label**, not a filename glob — two of them
+  (`concurrent_clients_tests`, `concurrent_multiserver_tests`) don't follow the
+  `*_integration_tests` naming, and a glob silently undercounted them (17/84 vs
+  the real 19/92).
+- `.github/workflows/build.yml` (Linux job) renders a shields endpoint JSON and
+  force-pushes it to an orphan **`badges`** branch; `README.md` embeds
+  `img.shields.io/endpoint?url=<raw badges/tests.json>`.
+
+**Why these choices.**
+1. **Orphan branch pushed with the built-in `GITHUB_TOKEN`, not a Gist.** The
+   popular `dynamic-badges-action` needs a Personal Access Token stored as a repo
+   secret; the orphan-branch approach is self-contained (just
+   `permissions: contents: write`), nothing to provision for a solo repo.
+2. **Publish only on `push` to `main`.** Fork-PR runs get a read-only token and
+   must not publish; gating this way also means the badge always reflects `main`,
+   never an in-flight PR — the correct semantics for a README badge.
+3. **The badge is the single source for "how many right now"; the docs stop
+   repeating totals.** README reports the number exactly once — the badge at the
+   top — and drops every hard count (headings, Test Results block, directory-tree
+   comments). STATUS.md's "Test status" section drops its `223/223`/`89/89`/suite
+   totals too and now describes only *what* is covered; per-feature breadcrumbs
+   ("shipped … N unit + M integration tests") stay, as point-in-time slice notes.
+
+**Caveats.** The badge image 404s until the first post-merge CI run on `main`
+publishes `badges/tests.json` (expected; it goes live on first run). shields/raw
+CDN caching lags a push by a few minutes. The badge reflects `main`; a viewer on
+the `rigazilla` fork still sees upstream's count (acceptable, arguably desirable).
