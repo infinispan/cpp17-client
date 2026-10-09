@@ -704,3 +704,33 @@ all green live against a Dockerized auth-enabled Infinispan 16.0.7. Documented i
 `documentation/topics/security.adoc` (new AsciiDoc user guide,
 `documentation/index.adoc`) with a runnable snippet in
 `examples/quickstart/README.md`.
+
+## 2026-10-09 — Stop repeating test counts across docs (CI badge considered, rejected)
+
+**Problem.** The unit/integration test counts were hand-typed in ~6 places across
+`README.md` and `docs/STATUS.md`. Every test change meant editing all of them, and
+nothing verified the numbers — one README spot had silently drifted to `223 unit
+tests` while the real count had moved on.
+
+**Considered: a CI-published shields.io badge.** Compute counts from the *built test
+binaries* in CI (`scripts/count_tests.sh`, counting via `--gtest_list_tests` so the
+number matches what actually runs and needs no Docker) and force-push a shields
+endpoint JSON to an orphan `badges` branch for the README to embed. Prototyped, then
+**rejected as overkill** for a solo, intermittently-worked repo: it added a CI step
+with `contents: write`, an orphan branch, a helper script, and a badge that 404s
+until the first post-merge run and lags behind CDN caching — a lot of moving parts
+to avoid typing a number.
+
+**Decision.** Just remove the duplication. `docs/STATUS.md` (the authoritative
+current-state doc) carries the totals **once**, in its "Test status" section;
+everywhere else describes *what* is covered rather than repeating the totals:
+- README drops all hard counts — the `### Unit Tests` / `### Integration Tests`
+  headings, the directory-tree comments, and the "Test Results" block (which now
+  points at STATUS.md for the breakdown).
+- Per-feature breadcrumbs ("shipped … N unit + M integration tests") stay, as
+  point-in-time slice notes.
+
+The one-place count is refreshed by hand when it drifts; `--gtest_list_tests` on the
+built binaries (`unit_tests` plus the ctest `integration`-labelled suites) is the
+quick way to get the real number (250 unit / 92 integration / 19 suites as of this
+entry) without a `grep TEST(`, which overcounts parameterized/disabled macros.
