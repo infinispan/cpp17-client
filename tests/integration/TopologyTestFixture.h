@@ -199,7 +199,7 @@ protected:
         std::string cmd = "docker exec " + server.containerID +
                          " bash -c \"echo 'create cache --template=org.infinispan.DIST_SYNC " +
                          std::string(TEST_CACHE) +
-                         "' | /opt/infinispan/bin/cli.sh -c http://localhost:11222\" >/dev/null 2>&1";
+                         "' | /opt/infinispan/bin/cli.sh -c http://localhost:11222 -f -\" >/dev/null 2>&1";
         std::ignore = system(cmd.c_str());
     }
 
