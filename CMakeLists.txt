@@ -417,6 +417,18 @@ if(GTest_FOUND)
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         LABELS "integration;docker;auth"
     )
+
+    # Fail fast if a suite hangs (e.g. a server/CLI-version regression stalls a
+    # subprocess) instead of letting one stuck test burn the whole CI job budget.
+    set_tests_properties(
+        PingIntegrationTests GetIntegrationTests GetWithMetadataIntegrationTests
+        PutIntegrationTests RemoveIntegrationTests RemoveWithVersionIntegrationTests
+        ReplaceWithVersionIntegrationTests PutIfAbsentIntegrationTests ReplaceIntegrationTests
+        ContainsKeyIntegrationTests ErrorHandlingIntegrationTests TopologyIntegrationTests
+        ConcurrentClientsTests HashAwareRoutingIntegrationTests ConcurrentMultiServerTests
+        RetryViewIntegrationTests PingRetryIntegrationTests AuthIntegrationTests
+        PROPERTIES TIMEOUT 300
+    )
     endif()  # NOT WIN32 (integration tests)
 
     message(STATUS "Google Test found - unit tests enabled (integration tests: non-Windows only)")

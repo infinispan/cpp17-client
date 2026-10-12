@@ -704,3 +704,35 @@ all green live against a Dockerized auth-enabled Infinispan 16.0.7. Documented i
 `documentation/topics/security.adoc` (new AsciiDoc user guide,
 `documentation/index.adoc`) with a runnable snippet in
 `examples/quickstart/README.md`.
+
+## 2026-10-12 — Integration tests hung on CI: Infinispan `:latest` CLI stopped exiting on EOF
+
+**Symptom.** Every CI run from Oct 9 on hung: `GetIntegrationTests` started and
+produced no further output until the 30-min job timeout cancelled it (an orphan
+`docker` process was left behind). Only the Ubuntu job runs integration tests
+(Fedora is build-only, Windows doesn't build them), so it looked Ubuntu-specific.
+`main` had last run green on 2026-09-25 and the branch on top of it was docs-only —
+the code was identical, so the trigger was environmental, not the change.
+
+**Root cause.** The integration tests pull `quay.io/infinispan/server:`**`latest`**
+(never pinned). Between Sep-25 and Oct-9 `:latest` advanced from 16.0.x to
+**16.3.0**, and 16.3's `cli.sh`, when fed a command through a pipe
+(`echo 'create cache …' | cli.sh -c <url>`), now **runs the command but does not
+exit on stdin EOF** — it drops into an interactive session and blocks forever.
+16.0.x exited cleanly on EOF. The helper `createCacheViaCLI` (copy-pasted into 13
+integration files) wraps that in `system("… >/dev/null 2>&1")` with no timeout, so
+the whole suite hung. Reproduced locally against both 16.3.0 (hangs) and 16.0.7
+(exits) via podman.
+
+**Fix.** Run the CLI in batch mode: `cli.sh -c <url> `**`-f -`** (read commands from
+stdin, exit at EOF). Applied to all 13 `createCacheViaCLI` copies. Also added a
+per-test ctest **`TIMEOUT 300`** to every integration suite so a future stall fails
+in minutes instead of burning the 30-min job budget (slowest real suite is
+`TopologyIntegrationTests` at ~117s, so 300s has comfortable headroom).
+
+**Not pinned.** 16.3.0 is otherwise fully compatible — the full `ctest -L
+integration` suite passes **18/18 green against real docker on `:latest` (16.3.0)**
+(verified 2026-10-12). An earlier local `Connection reset by peer` on the Get ops
+was a rootless-podman networking artifact (reproduced identically on known-good
+16.0.7, and absent under real docker), not a version regression — so `:latest` was
+left unpinned rather than frozen to an old release.

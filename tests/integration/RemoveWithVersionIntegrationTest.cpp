@@ -23,7 +23,7 @@ namespace {
 void createCacheViaCLI(const std::string& cacheName) {
     std::string cmd = "docker exec " + InfinispanTestEnvironment::containerID +
                      " bash -c \"echo 'create cache --template=org.infinispan.DIST_SYNC " + cacheName +
-                     "' | /opt/infinispan/bin/cli.sh -c http://admin:password@localhost:11222\" >/dev/null 2>&1";
+                     "' | /opt/infinispan/bin/cli.sh -c http://admin:password@localhost:11222 -f -\" >/dev/null 2>&1";
     std::ignore = system(cmd.c_str());
 }
 

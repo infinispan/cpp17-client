@@ -4,7 +4,7 @@
 > If any other doc disagrees with this file, this file wins. Point-in-time
 > snapshots live in [`archive/`](archive/) and are historical only.
 >
-> **Last updated:** 2026-09-25
+> **Last updated:** 2026-10-12
 
 ---
 
@@ -242,6 +242,12 @@ multiplexing. See "Working and shipped" below._
   Windows and Fedora stay unit-only (Fedora runs inside a container with no
   Docker daemon; Windows doesn't build the integration tests). Windows/MSVC
   portability and `-Werror` build parity also landed (Sept 2026).
+- **Integration tests pull `quay.io/infinispan/server:latest`** (unpinned).
+  Cache setup goes through `cli.sh -c <url> -f -` (batch mode, exits on EOF) and
+  each ctest integration suite has `TIMEOUT 300`, so a server/CLI-version change
+  that stalls a subprocess fails fast instead of hanging the whole CI job. Full
+  suite verified green against `:latest` = 16.3.0 on 2026-10-12. See
+  [`DECISIONS.md`](DECISIONS.md).
 
 **Test status (verified 2026-09-25):**
 - Unit: **223/223** passing (`./build/unit_tests`, <1s) — +19 for the auth work
