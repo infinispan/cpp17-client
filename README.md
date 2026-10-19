@@ -115,7 +115,7 @@ ctest -C Release --output-on-failure
 
 ## Testing
 
-### Unit Tests (250 tests)
+### Unit Tests
 ```bash
 cd build
 ./unit_tests
@@ -124,7 +124,7 @@ cd build
 ctest -R UnitTests --output-on-failure
 ```
 
-### Integration Tests (92 tests, 19 suites)
+### Integration Tests
 Requires Docker to run Infinispan server:
 ```bash
 cd build
@@ -153,8 +153,9 @@ ctest --output-on-failure
 **Current Progress**: Full CRUD (PING/GET/PUT/REMOVE) + SCRAM auth + topology
 awareness + hash-aware routing + async multiplexing + metadata/version-based
 operations (Step 10) + typed error handling and user-decided retry, keyed and
-keyless (Step 11) + Hot Rod URI support (`RemoteCache::fromUri`, issue #9) — all
-shipped. **Next:** bulk operations (Step 12) or multiplexing benchmarks. See
+keyless (Step 11) + Hot Rod URI support (`RemoteCache::fromUri`, issue #9) +
+multi-server seed list with startup/runtime failover (issue #12) — all shipped.
+**Next:** bulk operations (Step 12) or multiplexing benchmarks. See
 [docs/STATUS.md](docs/STATUS.md) for live status.
 Per-step milestone history (frozen at Step 9) is archived at
 [docs/archive/PROGRESS.md](docs/archive/PROGRESS.md).
@@ -163,9 +164,9 @@ _(Step numbers follow [`../hotrod-foundry/ROADMAP.md`](../hotrod-foundry/ROADMAP
 [`docs/STATUS.md`](docs/STATUS.md) is authoritative for which steps are done — not
 any headline count.)_
 
-**Test Results** (verified 2026-10-09):
-- Unit Tests: **250/250 passing** ✅
-- Integration Tests: **92/92 passing** ✅ across 19 suites (against live Infinispan via Docker)
+**Test Results** — unit and integration suites all pass (integration against live
+Infinispan via Docker). See [`docs/STATUS.md`](docs/STATUS.md) for the current
+coverage breakdown and counts.
 
 ## Features
 
@@ -294,8 +295,8 @@ cpp17-client/
 │   ├── hash/                    # MurmurHash3 + consistent hashing
 │   └── operations/              # Hot Rod operations (with failover)
 ├── tests/                       # Test suite
-│   ├── unit/                    # 223 unit tests
-│   └── integration/             # 92 integration tests, 19 suites (multi-node clusters)
+│   ├── unit/                    # unit tests (gtest)
+│   └── integration/             # integration tests (multi-node clusters, Docker)
 ├── documentation/               # AsciiDoc user guide (index.adoc + topics/)
 ├── examples/                    # Usage examples
 │   └── quickstart/              # Simple GET/PUT/REMOVE + retry + auth examples
@@ -375,5 +376,6 @@ In short, following the hotrod-foundry porting guidelines:
 
 **Maintained by**: rigazilla  
 **Status**: Active development  
-**Current Step**: Error handling + user-decided retry complete (Step 11, keyed &
-keyless). Next: bulk operations (Step 12). ✅
+**Current Step**: Step 11 (error handling + user-decided retry, keyed & keyless)
+complete; since then Hot Rod URI `fromUri` (#9) and multi-server seed list +
+failover (#12) shipped. Next: bulk operations (Step 12). ✅

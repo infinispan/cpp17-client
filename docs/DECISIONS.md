@@ -75,7 +75,7 @@ again when true async landed.
 **Status:** ✅ Superseded — the real `MultiplexedConnection` replaced this shim
 (see next entry). No blocking shim remains in `RemoteCache.cpp`.
 
-## 2026 (multiplexing landing) — MultiplexedConnection design
+## 2026-07-02 — MultiplexedConnection design
 
 **Decision:** One connection per server multiplexes concurrent requests over a
 single socket. A dedicated read-loop thread reads responses; a
@@ -862,6 +862,41 @@ today, so decoding them is currently a no-op; it is done anyway for Java parity
 and to be ready for issue #10's `token=` (OAUTHBEARER), whose values can carry
 `=`/`+`/`/`.
 
+## 2026-10-09 — Stop repeating test counts across docs (CI badge considered, rejected)
+
+**Problem.** The unit/integration test counts were hand-typed in ~6 places across
+`README.md` and `docs/STATUS.md`. Every test change meant editing all of them, and
+nothing verified the numbers — one README spot had silently drifted to `223 unit
+tests` while the real count had moved on.
+
+**Considered: a CI-published shields.io badge.** Compute counts from the *built test
+binaries* in CI (`scripts/count_tests.sh`, counting via `--gtest_list_tests` so the
+number matches what actually runs and needs no Docker) and force-push a shields
+endpoint JSON to an orphan `badges` branch for the README to embed. Prototyped, then
+**rejected as overkill** for a solo, intermittently-worked repo: it added a CI step
+with `contents: write`, an orphan branch, a helper script, and a badge that 404s
+until the first post-merge run and lags behind CDN caching — a lot of moving parts
+to avoid typing a number.
+
+**Decision.** Just remove the duplication. `docs/STATUS.md` (the authoritative
+current-state doc) carries the totals **once**, in its "Test status" section;
+everywhere else describes *what* is covered rather than repeating the totals:
+- README drops all hard counts — the `### Unit Tests` / `### Integration Tests`
+  headings, the directory-tree comments, and the "Test Results" block (which now
+  points at STATUS.md for the breakdown).
+- Per-feature breadcrumbs ("shipped … N unit + M integration tests") stay, as
+  point-in-time slice notes.
+
+The one-place count is refreshed by hand when it drifts; `--gtest_list_tests` on the
+built binaries (`unit_tests` plus the ctest `integration`-labelled suites) is the
+quick way to get the real number without a `grep TEST(`, which overcounts
+parameterized/disabled macros.
+
+**Provenance.** This decision + convention originated in PR #14
+(`feat/test-count-badge`); that PR was closed unmerged and its changes were
+re-applied here (it had gone stale/conflicting against `main`). Counts as of this
+re-application: **250 unit / 96 integration / 20 suites**.
+
 ## 2026-10-12 — Integration tests hung on CI: Infinispan `:latest` CLI stopped exiting on EOF
 
 **Symptom.** Every CI run from Oct 9 on hung: `GetIntegrationTests` started and
@@ -1004,3 +1039,18 @@ instead. All affected
 regressions re-run green: RetryView (incl. the D5 proxy-disabled throw), PingRetry
 (incl. the all-excluded throw fixed above), HashAwareRouting, ConcurrentMultiServer;
 unit 250/250; `-Werror`/Release build clean.
+
+## 2026-10-19 — Schema gotcha preserved from STATUS: replace_if_unmodified nibble flip
+
+**What:** Recording — in its proper home — a schema bug found 2026-09-20 that had
+only ever lived in STATUS.md, moved here during the STATUS backlog cleanup so it is
+not lost. `hotrod40.ksy` `replace_if_unmodified_request` packs the expiration
+`time_units` nibbles in the OPPOSITE order from `put_request`/`expiration_params`
+(lifespan and maxIdle swapped). Java uses one shared `writeExpirationParams` for
+both PUT and replaceWithVersion, so PUT's order — **high nibble = lifespan, low
+nibble = maxIdle** — is authoritative and is what this client implements
+(`replaceWithVersion` 0x09, shipped 2026-09-20). Cross-checked against this client +
+Java `ReplaceIfUnmodifiedOperation` + a corrected reading of the schema.
+**Why it matters:** if someone later "fixes" the client to match the `.ksy` here,
+replaceWithVersion's lifespan/maxIdle would silently swap. The `.ksy` is still wrong
+on this point; fix pending upstream in hotrod-dissector.
