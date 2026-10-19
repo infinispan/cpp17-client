@@ -197,6 +197,9 @@ any headline count.)_
 - ✅ **Hot Rod URI** (`RemoteCache::fromUri("hotrod://...")`) — build a client from a
   connection string (hosts, credentials, `sasl_mechanism`/`client_intelligence`/
   `protocol_version` params); `hotrod://` only for now (TLS and more in issue #10)
+- ✅ **Multi-server seed list** (issue #12) — all hosts in the URI become seed
+  servers with startup *and* runtime failover (ops fall back to the seed list when
+  the connected server dies or no topology is known, e.g. in BASIC mode)
 - ✅ **Integration test framework** (GoogleTest + Docker + multi-node clusters)
 
 ### Full CRUD with Smart Routing and Async Operations
@@ -244,7 +247,9 @@ auto cache = RemoteCache::fromUri(
     "my-cache");
 cache->connect();
 
-// v1 supports hotrod:// only; the first host seeds the topology, credentials
+// Supports hotrod:// only. All hosts become seed servers (issue #12): connect()
+// tries each in order, and ops fall back to the seed list when the connected
+// server dies or no topology is known (e.g. BASIC mode). Credentials
 // enable SCRAM, and sasl_mechanism/client_intelligence/protocol_version (Java
 // "4.0"/"4.1" form) are honoured. Userinfo and query values are percent-decoded
 // (RFC 3986), so a reserved character in a password is written encoded — e.g. a

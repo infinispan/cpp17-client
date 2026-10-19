@@ -319,6 +319,18 @@ if(GTest_FOUND)
             # Note: NOT gtest_main - we provide our own main()
     )
 
+    # Multi-server seed list — runtime failover (issue #12) integration tests (multi-server)
+    add_executable(multiseed_integration_tests
+        tests/integration/MultiSeedIntegrationTest.cpp
+    )
+
+    target_link_libraries(multiseed_integration_tests
+        PRIVATE
+            hotrod-client
+            GTest::gtest
+            # Note: NOT gtest_main - we provide our own main()
+    )
+
     # SASL/SCRAM authentication integration tests (auth-enabled single server)
     add_executable(auth_integration_tests
         tests/integration/AuthIntegrationTest.cpp
@@ -356,6 +368,7 @@ if(GTest_FOUND)
     add_test(NAME ConcurrentMultiServerTests COMMAND concurrent_multiserver_tests)
     add_test(NAME RetryViewIntegrationTests COMMAND retryview_integration_tests)
     add_test(NAME PingRetryIntegrationTests COMMAND pingretry_integration_tests)
+    add_test(NAME MultiSeedIntegrationTests COMMAND multiseed_integration_tests)
     add_test(NAME AuthIntegrationTests COMMAND auth_integration_tests)
 
     # Set working directory so scripts can be found
@@ -431,6 +444,10 @@ if(GTest_FOUND)
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         LABELS "integration;docker;topology;multi-server;retry"
     )
+    set_tests_properties(MultiSeedIntegrationTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        LABELS "integration;docker;topology;multi-server;failover"
+    )
     set_tests_properties(AuthIntegrationTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         LABELS "integration;docker;auth"
@@ -445,7 +462,8 @@ if(GTest_FOUND)
         ContainsKeyIntegrationTests ErrorHandlingIntegrationTests FromUriIntegrationTests
         TopologyIntegrationTests
         ConcurrentClientsTests HashAwareRoutingIntegrationTests ConcurrentMultiServerTests
-        RetryViewIntegrationTests PingRetryIntegrationTests AuthIntegrationTests
+        RetryViewIntegrationTests PingRetryIntegrationTests MultiSeedIntegrationTests
+        AuthIntegrationTests
         PROPERTIES TIMEOUT 300
     )
     endif()  # NOT WIN32 (integration tests)

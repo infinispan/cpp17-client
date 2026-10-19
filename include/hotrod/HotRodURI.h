@@ -27,11 +27,13 @@ namespace hotrod {
  * validation are unit-testable in isolation. RemoteCache::fromUri() consumes it
  * and applies the flat setters.
  *
- * v1 scope (the rest is deferred to issue #10):
+ * Scope (the rest is deferred to issue #10):
  *  - scheme: only "hotrod://". "hotrods://" (TLS) throws, since the transport has
  *    no TLS yet.
- *  - multiple comma-separated servers are parsed into `servers`, but the caller
- *    uses only the first as the seed (topology discovery finds the rest).
+ *  - multiple comma-separated servers are parsed into `servers`; all of them become
+ *    seed servers with startup + runtime failover (issue #12) — RemoteCache tries
+ *    them in order at connect() and falls back to the list when the learned
+ *    topology is empty or exhausted. `seed()` is retained as the first host.
  *  - query parameters are a typed whitelist; an unknown key or a bad value for a
  *    known key throws. Deferred params (timeouts, TLS, use_ssl, non-SCRAM SASL)
  *    are therefore rejected rather than silently ignored.
@@ -44,7 +46,8 @@ struct HotRodURI {
     std::optional<ClientIntelligence> clientIntelligence;
     std::optional<uint8_t>           protocolVersion;     // Protocol::VERSION_40 / _41
 
-    /** The first server in the list — the seed used by RemoteCache in v1. */
+    /** The first server in the list — the bootstrap seed RemoteCache connects to
+     *  first; the full `servers` list is used for startup/runtime failover (#12). */
     const ServerAddress& seed() const { return servers.front(); }
 
     /**
