@@ -145,11 +145,12 @@ Rod URI `fromUri` (#9), multi-server seed list + failover (#12)._
   Windows and Fedora stay unit-only (Fedora runs inside a container with no
   Docker daemon; Windows doesn't build the integration tests). Windows/MSVC
   portability and `-Werror` build parity also landed (Sept 2026).
-- **Integration tests pull `quay.io/infinispan/server:latest`** (unpinned).
+- **All integration tests pull `quay.io/infinispan/server:latest`** (unpinned) —
+  single-server, auth, and (as of 2026-10-19) the multi-node cluster fixture
+  (`test-configs/docker-compose-cluster.yml`), which previously pinned 16.2.
   Cache setup goes through `cli.sh -c <url> -f -` (batch mode, exits on EOF) and
   each ctest integration suite has `TIMEOUT 300`, so a server/CLI-version change
-  that stalls a subprocess fails fast instead of hanging the whole CI job. Full
-  suite verified green against `:latest` = 16.3.0 on 2026-10-12. See
+  that stalls a subprocess fails fast instead of hanging the whole CI job. See
   [`DECISIONS.md`](DECISIONS.md).
 
 **Test status (verified 2026-10-19):** **250 unit** + **96 integration** (20

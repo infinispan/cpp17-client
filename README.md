@@ -64,7 +64,8 @@ See [`examples/quickstart/README.md`](examples/quickstart/README.md) for full do
 - **Google Test** (for testing)
 
 **Runtime Requirements**:
-- Infinispan Server 16.0+ (tested with 16.2)
+- Infinispan Server 16.0+ (all integration suites run against `:latest` —
+  currently 16.3; only the quickstart example pins 16.2)
 - Docker (for integration tests and quickstart example)
 
 ### Linux (Fedora/RHEL)
@@ -370,6 +371,8 @@ In short, following the hotrod-foundry porting guidelines:
 - ✅ **v0.8.0** (2026-09-20): Metadata / version-based operations (Step 10)
 - ✅ **v0.9.0** (2026-09-25): Typed error handling + user-decided retry, keyed &
   keyless (Step 11)
+- ✅ **2026-10** (issue-based): Hot Rod URI `fromUri` (#9) + multi-server seed list
+  with startup/runtime failover (#12)
 - 🎯 **v0.10.0** (upcoming): Bulk operations (Step 12)
 
 ---
