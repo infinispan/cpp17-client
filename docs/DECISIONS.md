@@ -1054,3 +1054,24 @@ Java `ReplaceIfUnmodifiedOperation` + a corrected reading of the schema.
 **Why it matters:** if someone later "fixes" the client to match the `.ksy` here,
 replaceWithVersion's lifespan/maxIdle would silently swap. The `.ksy` is still wrong
 on this point; fix pending upstream in hotrod-dissector.
+
+## 2026-10-19 — Align all test fixtures to `:latest` (cluster compose was pinned 16.2)
+
+**What:** `test-configs/docker-compose-cluster.yml` (the multi-node fixture used by
+`start_cluster.sh`/`add_cluster_node.sh` for the topology/hash/retry/concurrent/
+multi-seed suites) pinned `quay.io/infinispan/server:16.2`, while the single-server
+and auth fixtures (`scripts/start_infinispan_noauth.sh`, `start_infinispan_auth.sh`)
+already used `:latest`. Changed all four cluster node images to `:latest` so every
+integration suite exercises the same (newest) server. The quickstart example
+(`examples/quickstart/start-server.sh`) intentionally stays pinned to 16.2 — it's a
+copy-paste demo, not a test.
+
+**Why:** the split meant different suites tested different server versions (so a
+multi-node regression on a new server could hide until a cluster run happened to use
+it). STATUS.md already claimed "integration tests pull `:latest`", which was an
+overclaim until now.
+
+**Risk + mitigation:** `:latest` can drift and break (see the 2026-10-12 CLI-hang
+entry) — the `TIMEOUT 300` guard per ctest suite plus `cli.sh -f -` batch mode keep
+a server-side change failing fast rather than hanging CI. Verified the full
+multi-node suite set green against `:latest` = 16.3.0 on 2026-10-19 after the switch.
