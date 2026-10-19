@@ -903,3 +903,104 @@ was missing from the ctest `TIMEOUT 300` group — the exact hang the 2026-10-12
 fix addressed everywhere else. Added `-f -` to its CLI invocation and listed
 `FromUriIntegrationTests` in the timeout block so this suite can no longer stall
 the CI job on Infinispan `:latest`.
+
+## 2026-10-19 — Multi-server seed list: startup + runtime failover (issue #12)
+
+**What:** `fromUri` now carries *all* comma-separated hosts as seed servers
+(`RemoteCache::seeds_`, retained in URI order; mirrors the Java client's immutable
+`ClusterInfo.getInitialServers()`). Two failover tiers were added:
+- **Startup** — `connect()` tries each seed in order, reusing the pre-built
+  `connection_` for `seeds_[0]` and building fresh for the rest; the first success
+  becomes the bootstrap `connection_` (and `host_`/`port_`). If every seed is
+  unreachable it throws one `HotRodClientException(BeforeSend)` whose message lists
+  every seed tried (with its error).
+- **Runtime** — a new `tryConnectSeeds(exclude, tried)` helper (caller holds
+  `stateMutex_`) is wired into the fall-through points of both selection methods:
+  `selectAnyServer` (keyless), the hash-owners-exhausted path of
+  `selectServerForKey`, and that method's no-hash/no-owners/empty fallback (which
+  previously just `return connection_`). It prefers the live bootstrap `connection_`
+  (fast path, so the happy path and BASIC mode do no new I/O), else walks the seeds
+  via the existing pure `orderKeyCandidates({}, seeds_, exclude∪tried)` and adopts
+  the first reachable seed as the new bootstrap connection so the next op's fast
+  path reuses it instead of re-probing a dead one.
+
+**Why it matters:** v1 of the URI work (issue #9) used only the first host as the
+seed and relied on topology discovery for the rest, which loses startup failover
+and — in BASIC mode, where no topology is ever learned — any failover at all.
+
+**Design decisions (discussed before implementing, compared against the Java 16.3
+client):**
+- **Honor `proxyToNonOwner` for keyed seed fallback (D5 preserved).** When a key's
+  owners are all down/excluded *and* `proxyToNonOwner_ == false`, we do **not** fall
+  back to a seed — a seed serving a non-owned key is a proxy, exactly what that flag
+  forbids. So keyed seed fallback is gated on `proxyToNonOwner_`. (Java has no such
+  flag — it always proxies; our default `true` matches Java, the strict mode is a
+  C++-only opt-in.) Bootstrap cases (empty/no topology, no owners) ignore the flag,
+  since there are no owners to exhaust.
+- **Caller-driven exhaustion ≠ unreachability.** If the topology is non-empty but
+  the caller excluded *every* known server, we throw rather than rescue via a seed.
+  Found via `PingRetryIntegrationTest.AllServersExcludedThrowsBeforeSend`: the seed's
+  address (`localhost:11222`) differs from the topology's internal container address
+  (`172.18.0.x:11222`) for the *same* node, so an exclusion set built from topology
+  addresses does not contain the seed — the seed fast path would have wrongly
+  rescued the excluded ping. Fix: seed fallback fires only when we have no topology
+  at all, or when we actually attempted ≥1 server and it failed (not when the
+  candidate list was emptied purely by exclusion). Applied to both selection paths
+  (an explicit `candidates.empty()` throw in `selectAnyServer`; a `!tried.empty()`
+  gate on the keyed path).
+- **Reassign `connection_` on runtime failover (+ fast path), and lock its reads.**
+  Pointing `connection_` at the reached seed keeps `isConnected()` truthful and
+  avoids re-probing the dead bootstrap seed on every op during an outage. Because
+  `connection_` can now be reassigned from a user/op thread (under `stateMutex_`),
+  the previously-unlocked reads in `isConnected()`/`disconnect()` now take
+  `stateMutex_` to remove the shared_ptr assignment race. `disconnect()` copies the
+  pointer out under the lock and calls `close()` *outside* it (close joins the read
+  loop, which may be blocked in `handleTopologyUpdate` waiting on the same mutex).
+  The startup `connect()` reassignment is pre-read-loop/single-threaded.
+- **Runtime seed (re)connection is gated on a connect()..disconnect() lifecycle
+  flag (`active_`).** First cut of `tryConnectSeeds` reconnected whenever the
+  bootstrap connection was down — which silently re-established a connection for an
+  op issued *after* `disconnect()` (or before `connect()`), breaking the long-
+  standing contract that such ops throw. Caught by the full `ctest` sweep: all ten
+  `*AfterDisconnect` suite tests failed (they `EXPECT_THROW std::runtime_error`
+  after `disconnect()`; BASIC mode has empty topology, so they hit exactly the new
+  keyed seed-fallback path). Fix: `active_` is set true at the end of a successful
+  `connect()` and false in `disconnect()` (both under `stateMutex_`); when false,
+  `tryConnectSeeds` returns the bootstrap `connection_` unchanged so the op throws
+  "Not connected" as before. `ReconnectAndPing` (disconnect → connect again) still
+  works because `connect()` re-sets the flag.
+
+**Divergences from the Java client (intentional, cross-checked against
+`/home/rigazilla/git/infinispan/client/hotrod-client` @ 16.3):**
+- **connect() all-seeds-down throws; Java tolerates.** Java's `OperationDispatcher
+  .start()` eagerly connects to all initial servers but swallows every failure and
+  defers to the first op. We keep our existing "`connect()` establishes ≥1
+  connection or throws" contract — clearer for callers; the thrown message names
+  every seed for diagnosis.
+- **No failed-server timeout memo.** Java keeps a global `connectionFailedServers`
+  set with `serverFailureTimeout` expiry so it pre-emptively avoids known-dead
+  servers. We have no equivalent, so during an outage we re-probe dead *topology*
+  members per op (the dead *bootstrap* seed is avoided by the reassign+fast-path).
+  Latency-under-failure only, never a wrong result. Left as future work.
+- **Privileged `connection_` kept (not folded into the pool).** Java 16.x has one
+  equal channel per address and no distinguished connection; our bootstrap
+  `connection_` lives outside `connectionPool_`, which is why the fast-path/locking
+  dance exists and why `seeds_[0]` can hold a duplicate socket (one as `connection_`,
+  one as a pool entry) once it also appears in topology. Keeping it was a scope call:
+  folding it into the pool as just-another-entry (the Java-faithful model, which
+  would delete the fast-path/locking code) is a larger refactor tracked as future
+  work. Functionally the layered model matches Java's observable failover behavior.
+
+**Tests:** +2 startup-failover in `FromUriIntegrationTest` (recover via 2nd seed;
+all-seeds-unreachable throws naming each) and +2 `MultiSeedIntegrationTest`:
+`RuntimeFailoverAcrossSeedsBasic` (2-node cluster, BASIC client seeded with both,
+kill the connected node, next op recovers via the other seed) and
+`TopologyAwareStartupFailoverAndHashRouting` (HASH client from a multi-seed URI
+with a dead first seed: connect() fails over, then topology discovery + hash
+routing work). The pure "all topology members unreachable -> seed" corner is not
+staged as an integration test: the seeds are the cluster nodes, so killing every
+topology member also kills every seed — the BASIC test isolates the seed tier
+instead. All affected
+regressions re-run green: RetryView (incl. the D5 proxy-disabled throw), PingRetry
+(incl. the all-excluded throw fixed above), HashAwareRouting, ConcurrentMultiServer;
+unit 250/250; `-Werror`/Release build clean.

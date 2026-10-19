@@ -33,13 +33,29 @@ _(Full per-session workflow: [`WORKFLOW.md`](WORKFLOW.md).)_
 
 _The 1–3 concrete things to do next. Keep this short and current._
 
-0. **Hot Rod URI support COMPLETE (issue #9).** `RemoteCache::fromUri(uri,
+0. **Multi-server seed list COMPLETE (issue #12).** All comma-separated hosts in a
+   `fromUri` connection string become seed servers with **startup + runtime
+   failover**. `connect()` tries each seed in order until one connects (all
+   unreachable → one `HotRodClientException` listing every seed tried). At runtime,
+   when the learned topology is empty (incl. BASIC mode) or every known server is
+   unreachable, ops fall back to the seed list via `tryConnectSeeds` (prefers the
+   live bootstrap `connection_`; adopts the reached seed as the new bootstrap).
+   Caller-driven exhaustion is distinguished from unreachability: excluding *every*
+   known server still throws (no seed rescue of an excluded node). Keyed seed
+   fallback is gated on `proxyToNonOwner_` (a seed serving a non-owned key is a
+   proxy, D5). `connection_` reads in `isConnected()`/`disconnect()` now lock
+   `stateMutex_` (it can be reassigned by runtime failover). Mirrors the Java
+   client's `ClusterInfo.getInitialServers()` fallback; divergences (connect()
+   throws vs. Java-tolerant; no failed-server timeout memo) in
+   [`DECISIONS.md`](DECISIONS.md) (2026-10-19). **Next: pick a roadmap step — Step
+   12 (bulk ops) or benchmark the multiplexing path.**
+1. **Hot Rod URI support COMPLETE (issue #9).** `RemoteCache::fromUri(uri,
    cacheName="")` builds a configured (not-yet-connected) client from a
    `hotrod://[user:password@]host1[:port1][,host2...][?k=v&...]` connection
    string; returns a `std::unique_ptr<RemoteCache>` (RemoteCache owns a mutex, so
    it is non-movable). Parsing lives in a pure, header-only `HotRodURI::parse()`
-   (`include/hotrod/HotRodURI.h`, 27 unit tests). v1 scope: `hotrod://` only;
-   first host is the seed (topology discovery finds the rest); credentials enable
+   (`include/hotrod/HotRodURI.h`, 27 unit tests). Scope: `hotrod://` only;
+   all hosts are seed servers (issue #12, above); credentials enable
    SCRAM; userinfo and query values are percent-decoded (RFC 3986, java.net.URI
    parity — so an `@`/`/`/`:` in a password written `%40`/`%2F`/`%3A` reaches the
    client as its real bytes); query whitelist `sasl_mechanism` /
@@ -49,8 +65,6 @@ _The 1–3 concrete things to do next. Keep this short and current._
    `hotrods://`/TLS, unknown params (`connect_timeout`, `socket_timeout`,
    `use_ssl`, `token`, …), `protocol_version=AUTO`/3.x. Deferred features tracked
    in **issue #10**. Rationale in [`DECISIONS.md`](DECISIONS.md) (2026-10-09).
-   **Next: pick a roadmap step — Step 12 (bulk ops) or benchmark the multiplexing
-   path.**
 1. **SASL/SCRAM authentication COMPLETE — end-to-end for the whole SCRAM
    family.** `RemoteCache::setAuthentication(username, password, realm="default",
    serverName="infinispan", mechanism="SCRAM-SHA-256")` (flat setter, matching
@@ -201,11 +215,13 @@ pull from here next. Step numbers follow
   (`src/operations/RemoteCache.cpp:140,182`).
 - [x] **Hot Rod URI support (`fromUri`)** — **shipped 2026-10-09** (issue #9, 27
   unit tests). See *Working and shipped*.
+- [x] **Multi-server seed list (issue #12)** — **shipped 2026-10-19** (4 integration
+  tests). Startup + runtime failover across all URI seeds. See *Working and shipped*.
 - [ ] **Hot Rod URI — deferred features (issue #10):** `hotrods://`/TLS +
   cert/SNI/hostname-validation params, `connect_timeout`/`socket_timeout`,
-  multi-server seed list (startup failover across seeds), non-SCRAM SASL
-  (PLAIN/OAUTHBEARER `token`), `protocol_version=AUTO`/3.x. Each drops its
-  "unsupported" throw from `HotRodURI::parse` once the capability lands.
+  non-SCRAM SASL (PLAIN/OAUTHBEARER `token`), `protocol_version=AUTO`/3.x. Each
+  drops its "unsupported" throw from `HotRodURI::parse` once the capability lands.
+  (Multi-server seed list is now shipped — issue #12, above.)
 - [ ] **TLS/SSL support** (transport encryption). Also unblocks `hotrods://` above.
 
 **Longer horizon (Step 14+ advanced features):** transactions (XA), client
@@ -225,10 +241,18 @@ multiplexing. See "Working and shipped" below._
 - **Hot Rod URI (`RemoteCache::fromUri`)** — build a configured client from a
   `hotrod://[user:pass@]host[:port][,host...][?k=v]` connection string (issue #9);
   pure header-only parser `HotRodURI::parse` (`include/hotrod/HotRodURI.h`).
-  `hotrod://` scheme only, first host seeds the topology, SCRAM via credentials,
+  `hotrod://` scheme only, SCRAM via credentials,
   `sasl_mechanism`/`client_intelligence`/`protocol_version` params; userinfo and
   query values are percent-decoded (java.net.URI parity); unsupported
-  schemes/params throw. TLS/timeouts/multi-seed/non-SCRAM deferred (issue #10)
+  schemes/params throw. TLS/timeouts/non-SCRAM deferred (issue #10)
+- **Multi-server seed list + failover (`fromUri`, issue #12)** — all
+  comma-separated hosts become seed servers. **Startup failover:** `connect()`
+  tries each seed in order; all unreachable → one `HotRodClientException` listing
+  every seed. **Runtime failover:** when the learned topology is empty (incl.
+  BASIC mode) or every known server is unreachable, ops fall back to the seed list
+  (`tryConnectSeeds`) — prefers the live bootstrap `connection_` and adopts the
+  reached seed as the new bootstrap; keyed fallback gated on `proxyToNonOwner_`.
+  Excluding every known server still throws (no seed rescue of an excluded node)
 - Wire primitives (vInt, vLong, strings, byte arrays)
 - Protocol 4.0 headers (all conditional fields)
 - **SASL/SCRAM authentication (end-to-end)** — `setAuthentication(...)` runs the
@@ -294,8 +318,17 @@ multiplexing. See "Working and shipped" below._
   earlier +17 for `ServerSelectionTest` (`orderKeyCandidates` + `unionNodes`,
   Step 11b slices 1–3; +3 keyless-ordering tests for `selectAnyServer`, Step 11c
   slice 1) still stands
-- Integration: **92/92** passing across 19 suites (`ctest`, spins up Docker
+- Integration: **96/96** passing across 20 suites (`ctest`, spins up Docker
   Infinispan single-server + multi-node clusters), now also green on Linux CI.
+  +2 for the multi-seed startup failover in `FromUriIntegrationTest` (issue #12:
+  a dead first seed, live second seed → `connect()` recovers via the second; all
+  seeds unreachable → `connect()` throws a message naming each seed) and +2 for
+  `MultiSeedIntegrationTest` (issue #12): `RuntimeFailoverAcrossSeedsBasic` (a
+  BASIC-mode client seeded with both cluster nodes keeps serving after the
+  connected node is killed, failing over to the other seed) and
+  `TopologyAwareStartupFailoverAndHashRouting` (a HASH client built from a
+  multi-seed URI with a dead first seed fails over at connect(), then learns
+  topology and hash-routes) — verified live this session.
   +2 for `FromUriIntegrationTest` (issue #9: a client built via `fromUri` round-trips
   a value; a `?protocol_version=4.0` query param flows through to a working client)
   and +1 for `AuthIntegrationTest.FromUriWithCredentialsAuthenticates` (credentials
@@ -319,8 +352,10 @@ multiplexing. See "Working and shipped" below._
   The interlaced distributed tests (`ConcurrentMultiServerTest`) were fixed to
   tolerate a GET racing ahead of its PUT — a `nullopt` is expected, only a
   present-but-wrong value is an error.
-- Full run: `ctest --test-dir build --output-on-failure` → 100% pass
-  (19 ctest tests: 1 unit + 18 integration suites)
+- Full run: `ctest --test-dir build --output-on-failure` → **100% pass, 21/21**
+  (1 unit + 20 integration suites) — verified end-to-end this session after the
+  multi-seed work (incl. the `active_` lifecycle fix that keeps post-`disconnect()`
+  ops throwing; see DECISIONS 2026-10-19)
 - **Concurrency validated (2026-09-25):** the concurrent suites pass 8/8
   (incl. `ConcurrentWithFailover`), and a ThreadSanitizer run (`build-tsan/`)
   reports **no races in production code** — slice-4's `stateMutex_`/`shared_ptr`
