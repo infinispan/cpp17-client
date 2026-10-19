@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include "hotrod/RemoteCache.h"
 #include "hotrod/HeaderCodec.h"
+#include "hotrod/HotRodClientException.h"
 #include "InfinispanTestEnvironment.h"
 #include <cstdlib>
 #include <string>
@@ -81,6 +82,52 @@ TEST(FromUriIntegrationTest, ProtocolVersionParamProducesWorkingClient) {
     EXPECT_EQ(*got, value);
 
     cache->disconnect();
+}
+
+// Startup failover (issue #12): a dead FIRST seed followed by the live server.
+// connect() must try the dead seed, fail, and establish the bootstrap connection
+// via the second seed; ops then round-trip. 127.0.0.1:1 is a reserved, unused
+// port, so the first attempt is refused fast rather than hanging.
+TEST(FromUriIntegrationTest, StartupFailoverToSecondSeed) {
+    const std::string cacheName = "fromuri_failover";
+    createCacheViaCLI(cacheName);
+
+    const std::string uri = "hotrod://127.0.0.1:1," +
+        InfinispanTestEnvironment::host + ":" +
+        std::to_string(InfinispanTestEnvironment::port);
+    auto cache = RemoteCache::fromUri(uri, cacheName);
+    cache->connect();
+    EXPECT_TRUE(cache->isConnected());
+
+    const ByteArray key{'f', 'o', 'k'};
+    const ByteArray value{'f', 'o', 'v'};
+    cache->put(key, value).get();
+    auto got = cache->get(key).get();
+
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(*got, value);
+
+    cache->disconnect();
+}
+
+// When every seed is unreachable, connect() throws a BeforeSend
+// HotRodClientException whose message names each seed it tried.
+TEST(FromUriIntegrationTest, StartupAllSeedsUnreachableThrows) {
+    auto cache = RemoteCache::fromUri("hotrod://127.0.0.1:1,127.0.0.1:2", "nope");
+
+    bool threw = false;
+    try {
+        cache->connect();
+    } catch (const HotRodClientException& e) {
+        threw = true;
+        EXPECT_EQ(FailurePhase::BeforeSend, e.phase);
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("127.0.0.1:1"), std::string::npos)
+            << "message must name the first seed tried: " << msg;
+        EXPECT_NE(msg.find("127.0.0.1:2"), std::string::npos)
+            << "message must name the second seed tried: " << msg;
+    }
+    EXPECT_TRUE(threw) << "all seeds unreachable must throw from connect()";
 }
 
 int main(int argc, char** argv) {
