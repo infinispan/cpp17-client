@@ -28,8 +28,10 @@ void MultiplexedConnection::connect() {
         throw std::runtime_error("Already connected");
     }
 
-    // Create underlying TCP connection
+    // Create underlying TCP connection. TLS (when enabled) is negotiated inside
+    // Connection::connect(), so the SASL handshake below already runs encrypted.
     connection_ = std::make_unique<Connection>(host_, port_);
+    connection_->setTls(tls_);
     connection_->connect();
 
     // SASL handshake (synchronous, before the read thread consumes any bytes).
@@ -105,6 +107,13 @@ void MultiplexedConnection::setAuthentication(const Authentication& auth) {
         throw std::runtime_error("Cannot change authentication after connect()");
     }
     auth_ = auth;
+}
+
+void MultiplexedConnection::setTls(const TlsConfig& tls) {
+    if (connected_) {
+        throw std::runtime_error("Cannot change TLS configuration after connect()");
+    }
+    tls_ = tls;
 }
 
 int32_t MultiplexedConnection::getTopologyId() const {

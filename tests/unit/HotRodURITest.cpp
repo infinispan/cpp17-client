@@ -181,15 +181,82 @@ TEST(HotRodURITest, QueryParamMissingEqualsThrows) {
 
 // --- rejections: unsupported / deferred features (issue #10) -----------------
 
-TEST(HotRodURITest, HotRodsSchemeThrows) {
-    EXPECT_THROW(HotRodURI::parse("hotrods://localhost:11222"), HotRodClientException);
-}
-
 TEST(HotRodURITest, UnknownParamThrows) {
     EXPECT_THROW(HotRodURI::parse("hotrod://h?connect_timeout=5000"), HotRodClientException);
     EXPECT_THROW(HotRodURI::parse("hotrod://h?socket_timeout=5000"), HotRodClientException);
-    EXPECT_THROW(HotRodURI::parse("hotrod://h?use_ssl=true"), HotRodClientException);
     EXPECT_THROW(HotRodURI::parse("hotrod://h?token=abc"), HotRodClientException);
+}
+
+// --- TLS: hotrods:// scheme + server-auth PEM subset (issue #18) -------------
+
+TEST(HotRodURITest, HotRodsSchemeEnablesTlsWithDefaults) {
+    HotRodURI u = HotRodURI::parse("hotrods://localhost:11222");
+    ASSERT_TRUE(u.tls.has_value());
+    EXPECT_TRUE(u.tls->enabled);
+    EXPECT_TRUE(u.tls->ca_file.empty());          // system/default trust store
+    EXPECT_TRUE(u.tls->sni_host.empty());         // derived from host at connect
+    EXPECT_TRUE(u.tls->hostname_validation);      // Java default
+    // Host/port still parse as usual.
+    EXPECT_EQ(u.seed().host, "localhost");
+    EXPECT_EQ(u.seed().port, 11222);
+}
+
+TEST(HotRodURITest, PlainSchemeHasNoTls) {
+    HotRodURI u = HotRodURI::parse("hotrod://localhost");
+    EXPECT_FALSE(u.tls.has_value());
+}
+
+TEST(HotRodURITest, TlsParamsParsedIntoConfig) {
+    HotRodURI u = HotRodURI::parse(
+        "hotrods://localhost"
+        "?trust_store_file_name=/etc/pki/ca.pem"
+        "&sni_host_name=cache.example.com"
+        "&ssl_hostname_validation=false");
+    ASSERT_TRUE(u.tls.has_value());
+    EXPECT_TRUE(u.tls->enabled);
+    EXPECT_EQ(u.tls->ca_file, "/etc/pki/ca.pem");
+    EXPECT_EQ(u.tls->sni_host, "cache.example.com");
+    EXPECT_FALSE(u.tls->hostname_validation);
+}
+
+TEST(HotRodURITest, TlsHostnameValidationBooleanCaseInsensitive) {
+    EXPECT_TRUE(HotRodURI::parse(
+        "hotrods://h?ssl_hostname_validation=TRUE").tls->hostname_validation);
+    EXPECT_FALSE(HotRodURI::parse(
+        "hotrods://h?ssl_hostname_validation=False").tls->hostname_validation);
+}
+
+TEST(HotRodURITest, TlsHostnameValidationBadBooleanThrows) {
+    EXPECT_THROW(HotRodURI::parse("hotrods://h?ssl_hostname_validation=yes"),
+                 HotRodClientException);
+}
+
+TEST(HotRodURITest, TlsParamsOnPlainSchemeThrow) {
+    // TLS params require hotrods://; silently ignoring them would hide a mistake.
+    EXPECT_THROW(HotRodURI::parse("hotrod://h?sni_host_name=x"), HotRodClientException);
+    EXPECT_THROW(HotRodURI::parse("hotrod://h?trust_store_file_name=/ca.pem"),
+                 HotRodClientException);
+}
+
+TEST(HotRodURITest, DeferredTlsKeysThrow) {
+    // Recognized Java TLS keys we do not implement in this slice (mutual TLS,
+    // keystore formats, cipher/protocol tuning) are rejected, not ignored.
+    for (const char* uri : {
+             "hotrods://h?use_ssl=true",
+             "hotrods://h?trust_store_type=pkcs12",
+             "hotrods://h?trust_store_password=secret",
+             "hotrods://h?key_store_file_name=/client.p12",
+             "hotrods://h?key_store_type=pkcs12",
+             "hotrods://h?key_store_password=secret",
+             "hotrods://h?key_alias=client",
+             "hotrods://h?ssl_protocol=TLSv1.3",
+             "hotrods://h?ssl_ciphers=TLS_AES_256_GCM_SHA384",
+             "hotrods://h?ssl_named_groups=x25519",
+             "hotrods://h?ssl_provider=openssl",
+             "hotrods://h?ssl_context=ctx",
+         }) {
+        EXPECT_THROW(HotRodURI::parse(uri), HotRodClientException) << uri;
+    }
 }
 
 TEST(HotRodURITest, UnsupportedProtocolVersionThrows) {
@@ -204,7 +271,7 @@ TEST(HotRodURITest, BadClientIntelligenceValueThrows) {
 // The parse error is surfaced as a BeforeSend failure (nothing was sent).
 TEST(HotRodURITest, ParseErrorIsBeforeSend) {
     try {
-        HotRodURI::parse("hotrods://localhost");
+        HotRodURI::parse("hotrod://h?connect_timeout=5000");
         FAIL() << "expected throw";
     } catch (const HotRodClientException& e) {
         EXPECT_EQ(e.phase, FailurePhase::BeforeSend);

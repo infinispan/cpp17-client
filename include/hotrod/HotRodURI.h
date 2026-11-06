@@ -2,6 +2,7 @@
 
 #include "HeaderCodec.h"            // ClientIntelligence, Protocol::VERSION_*
 #include "HotRodClientException.h"  // HotRodClientException, ServerAddress, FailurePhase
+#include "TlsConfig.h"              // TlsConfig
 #include <string>
 #include <vector>
 #include <optional>
@@ -28,15 +29,17 @@ namespace hotrod {
  * and applies the flat setters.
  *
  * Scope (the rest is deferred to issue #10):
- *  - scheme: only "hotrod://". "hotrods://" (TLS) throws, since the transport has
- *    no TLS yet.
+ *  - scheme: "hotrod://" (plain) or "hotrods://" (TLS, issue #18). "hotrods://"
+ *    enables server-authenticated TLS; the PEM trust subset of the Java query
+ *    keys is parsed into `tls` (trust_store_file_name, sni_host_name,
+ *    ssl_hostname_validation). Mutual-TLS / keystore keys remain rejected.
  *  - multiple comma-separated servers are parsed into `servers`; all of them become
  *    seed servers with startup + runtime failover (issue #12) — RemoteCache tries
  *    them in order at connect() and falls back to the list when the learned
  *    topology is empty or exhausted. `seed()` is retained as the first host.
  *  - query parameters are a typed whitelist; an unknown key or a bad value for a
- *    known key throws. Deferred params (timeouts, TLS, use_ssl, non-SCRAM SASL)
- *    are therefore rejected rather than silently ignored.
+ *    known key throws. Deferred params (timeouts, non-SCRAM SASL, mutual-TLS /
+ *    keystore TLS keys) are therefore rejected rather than silently ignored.
  */
 struct HotRodURI {
     std::vector<ServerAddress>       servers;             // all parsed, in order (>=1)
@@ -45,6 +48,7 @@ struct HotRodURI {
     std::optional<std::string>       saslMechanism;       // e.g. "SCRAM-SHA-256"
     std::optional<ClientIntelligence> clientIntelligence;
     std::optional<uint8_t>           protocolVersion;     // Protocol::VERSION_40 / _41
+    std::optional<TlsConfig>         tls;                 // set when scheme is hotrods://
 
     /** The first server in the list — the bootstrap seed RemoteCache connects to
      *  first; the full `servers` list is used for startup/runtime failover (#12). */
@@ -108,6 +112,16 @@ private:
         if (c >= 'a' && c <= 'f') return c - 'a' + 10;
         return c - 'A' + 10;  // caller validated with std::isxdigit
     }
+
+    /** Parse a strict boolean query value. "true"/"false" (case-insensitive) only;
+     *  anything else throws (fail-fast, rather than Java's lenient parseBoolean). */
+    static bool parseBool(const std::string& value, const char* what) {
+        const std::string v = toLower(value);
+        if (v == "true")  return true;
+        if (v == "false") return false;
+        fail(std::string("invalid ") + what + " value '" + value +
+             "' (expected true or false)");
+    }
 };
 
 inline HotRodURI HotRodURI::parse(const std::string& uri) {
@@ -117,10 +131,8 @@ inline HotRodURI HotRodURI::parse(const std::string& uri) {
         fail("not a Hot Rod URI (missing scheme): " + uri);
     }
     const std::string scheme = toLower(uri.substr(0, schemeEnd));
-    if (scheme == "hotrods") {
-        fail("hotrods:// (TLS) is not supported");
-    }
-    if (scheme != "hotrod") {
+    const bool ssl = (scheme == "hotrods");
+    if (!ssl && scheme != "hotrod") {
         fail("not a Hot Rod URI (unsupported scheme '" + scheme + "')");
     }
 
@@ -206,6 +218,10 @@ inline HotRodURI HotRodURI::parse(const std::string& uri) {
     }
 
     // --- query parameters (typed whitelist; throw on unknown key / bad value) ---
+    // TLS fields accumulate here; finalized into result.tls after the loop so a
+    // "requires hotrods://" check can see both the scheme and any TLS params.
+    TlsConfig tls;
+    bool sawTlsParam = false;
     if (!query.empty()) {
         size_t qpos = 0;
         while (qpos <= query.size()) {
@@ -249,6 +265,29 @@ inline HotRodURI HotRodURI::parse(const std::string& uri) {
                         fail("unsupported protocol_version '" + value +
                              "' (supported: 4.0, 4.1)");
                     }
+                } else if (key == "trust_store_file_name") {
+                    // PEM CA file for server verification (issue #18). We diverge
+                    // from Java (which reads a JKS/PKCS12 keystore) by requiring PEM.
+                    tls.ca_file = value;
+                    sawTlsParam = true;
+                } else if (key == "sni_host_name") {
+                    tls.sni_host = value;
+                    sawTlsParam = true;
+                } else if (key == "ssl_hostname_validation") {
+                    tls.hostname_validation = parseBool(value, "ssl_hostname_validation");
+                    sawTlsParam = true;
+                } else if (key == "use_ssl" || key == "trust_store_type" ||
+                           key == "trust_store_password" || key == "key_store_file_name" ||
+                           key == "key_store_type" || key == "key_store_password" ||
+                           key == "key_alias" || key == "ssl_protocol" ||
+                           key == "ssl_ciphers" || key == "ssl_named_groups" ||
+                           key == "ssl_provider" || key == "ssl_context") {
+                    // Recognized Java TLS keys that this slice does not implement:
+                    // mutual TLS, keystore formats, and protocol/cipher tuning are
+                    // deferred (issue #10). Reject explicitly rather than silently.
+                    fail("Hot Rod URI parameter '" + key +
+                         "' is not supported yet (mutual TLS / keystore TLS / "
+                         "cipher tuning are deferred; issue #10)");
                 } else {
                     fail("unsupported Hot Rod URI parameter: " + key);
                 }
@@ -256,6 +295,17 @@ inline HotRodURI HotRodURI::parse(const std::string& uri) {
             if (amp == std::string::npos) break;
             qpos = amp + 1;
         }
+    }
+
+    // --- finalize TLS ---
+    // TLS params only make sense with the hotrods:// scheme; a plain hotrod:// URI
+    // carrying them is a configuration error, not silently ignored.
+    if (sawTlsParam && !ssl) {
+        fail("TLS parameters require the hotrods:// scheme");
+    }
+    if (ssl) {
+        tls.enabled = true;
+        result.tls = tls;
     }
 
     return result;
