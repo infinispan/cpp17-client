@@ -42,9 +42,10 @@ using namespace hotrod;
 
 namespace {
 
-// The in-process server thread writes a TLS close_notify on teardown; if the
-// client fd is already closed this raises SIGPIPE, whose default action would
-// kill the whole test process. Ignore it for the lifetime of these tests.
+// This guards the in-process echo *server* half (harness code), which does raw
+// SSL_write/SSL_shutdown onto client sockets that may already be closed -> SIGPIPE.
+// The client (the library under test) suppresses SIGPIPE itself per-connection, so
+// it does not rely on this; it is here only for the test's own server thread.
 [[maybe_unused]] const bool kSigpipeIgnored = [] {
     std::signal(SIGPIPE, SIG_IGN);
     return true;

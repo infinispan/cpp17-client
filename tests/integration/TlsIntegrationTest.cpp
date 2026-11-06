@@ -17,7 +17,6 @@
 #include "hotrod/RemoteCache.h"
 #include "hotrod/HotRodClientException.h"
 
-#include <csignal>
 #include <cstdlib>
 #include <fstream>
 #include <stdexcept>
@@ -169,11 +168,10 @@ TEST(TlsIntegrationTest, HostnameMismatchValidationOffRoundTrips) {
 }
 
 int main(int argc, char** argv) {
-    // A dropped TLS connection can make a client-side write hit a closed peer,
-    // raising SIGPIPE whose default action kills the process. Network clients
-    // conventionally ignore it (the app, here the test, owns signal disposition).
-    std::signal(SIGPIPE, SIG_IGN);
-
+    // Deliberately NO signal(SIGPIPE, SIG_IGN) here: the client library suppresses
+    // SIGPIPE per-connection (MSG_NOSIGNAL / SO_NOSIGPIPE / custom TLS BIO), so a
+    // dropped TLS connection must surface as a thrown exception, not kill this
+    // process. If this binary ever dies with signal 13, that protection regressed.
     ::testing::InitGoogleTest(&argc, argv);
     ::testing::AddGlobalTestEnvironment(new TlsServerEnvironment());
     return RUN_ALL_TESTS();

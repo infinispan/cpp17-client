@@ -105,8 +105,10 @@ Rod URI `fromUri` (#9), multi-server seed list + failover (#12)._
   always on). Min TLS 1.2. `include/hotrod/TlsConfig.h`; handshake in
   `src/transport/Connection.cpp`. Unit-tested against an in-process OpenSSL
   server and end-to-end against a TLS-enabled Infinispan
-  (`tests/integration/TlsIntegrationTest.cpp`, Docker). Mutual TLS / keystore
-  formats deferred (#10)
+  (`tests/integration/TlsIntegrationTest.cpp`, Docker). A dropped connection is
+  SIGPIPE-safe per-connection (MSG_NOSIGNAL / SO_NOSIGPIPE / custom TLS BIO) — no
+  process-global signal change — so it surfaces as a thrown exception, not process
+  death. Mutual TLS / keystore formats deferred (#10)
 - **Multi-server seed list + failover (`fromUri`, issue #12)** — all
   comma-separated hosts become seed servers. **Startup failover:** `connect()`
   tries each seed in order; all unreachable → one `HotRodClientException` listing
