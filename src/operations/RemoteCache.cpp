@@ -32,30 +32,29 @@ namespace hotrod
       }
    } // namespace
 
-   RemoteCache::RemoteCache(const std::string &host, uint16_t port)
-       : host_(host), port_(port), cacheName_(""),
-         protocolVersion_(Protocol::VERSION_41),
-         clientIntelligence_(ClientIntelligence::BASIC)
+   std::shared_ptr<MultiplexedConnection> RemoteCache::makeSeedConnection(const ServerAddress &addr)
    {
-      // Create MultiplexedConnection with topology callback
       auto topologyCallback = [this](const TopologyInfo &topo, const std::string &cacheName)
       {
          this->handleTopologyUpdate(topo, cacheName);
       };
-      connection_ = std::make_shared<MultiplexedConnection>(host, port, topologyCallback);
+      return std::make_shared<MultiplexedConnection>(addr.host, addr.port, topologyCallback);
+   }
+
+   RemoteCache::RemoteCache(const std::string &host, uint16_t port)
+       : host_(host), port_(port), seeds_{{host, port}}, cacheName_(""),
+         protocolVersion_(Protocol::VERSION_41),
+         clientIntelligence_(ClientIntelligence::BASIC)
+   {
+      connection_ = makeSeedConnection(seeds_.front());
    }
 
    RemoteCache::RemoteCache(const std::string &host, uint16_t port, const std::string &cacheName)
-       : host_(host), port_(port), cacheName_(cacheName),
+       : host_(host), port_(port), seeds_{{host, port}}, cacheName_(cacheName),
          protocolVersion_(Protocol::VERSION_41),
          clientIntelligence_(ClientIntelligence::BASIC)
    {
-      // Create MultiplexedConnection with topology callback
-      auto topologyCallback = [this](const TopologyInfo &topo, const std::string &cacheName)
-      {
-         this->handleTopologyUpdate(topo, cacheName);
-      };
-      connection_ = std::make_shared<MultiplexedConnection>(host, port, topologyCallback);
+      connection_ = makeSeedConnection(seeds_.front());
    }
 
    std::unique_ptr<RemoteCache> RemoteCache::fromUri(const std::string &uri,
@@ -64,9 +63,12 @@ namespace hotrod
       // Pure parse + validation (throws on anything malformed or unsupported).
       const HotRodURI parsed = HotRodURI::parse(uri);
 
-      // v1: the first host is the seed; topology discovery finds the rest (#10).
+      // All hosts become seed servers with startup + runtime failover (issue #12).
+      // The first is the bootstrap connection; the full list is retained for
+      // failover (see RemoteCache::seeds_ / connect() / tryConnectSeeds).
       const ServerAddress &seed = parsed.seed();
       auto cache = std::make_unique<RemoteCache>(seed.host, seed.port, cacheName);
+      cache->seeds_ = parsed.servers;  // legal: fromUri is a RemoteCache member
 
       if (parsed.clientIntelligence)
       {
@@ -106,19 +108,66 @@ namespace hotrod
 
    void RemoteCache::connect()
    {
-      connection_->setProtocolVersion(protocolVersion_);
-      connection_->setClientIntelligence(clientIntelligence_);
-      connection_->setAuthentication(auth_);
-      connection_->connect();
+      // Startup failover (issue #12): try each configured seed in order until one
+      // connects. The pre-built connection_ serves seeds_[0]; the rest are built
+      // fresh on demand. The first success becomes the bootstrap connection_.
+      // Runs before any read loop / concurrent op, so the connection_ assignment
+      // only needs the lock to pair cleanly with the locked reads elsewhere.
+      std::vector<std::string> failures;
+      for (size_t i = 0; i < seeds_.size(); ++i)
+      {
+         std::shared_ptr<MultiplexedConnection> candidate =
+             (i == 0) ? connection_ : makeSeedConnection(seeds_[i]);
+         candidate->setProtocolVersion(protocolVersion_);
+         candidate->setClientIntelligence(clientIntelligence_);
+         candidate->setAuthentication(auth_);
+         try
+         {
+            candidate->connect();
+         }
+         catch (const std::exception &e)
+         {
+            failures.push_back(seeds_[i].host + ":" + std::to_string(seeds_[i].port) +
+                               " (" + e.what() + ")");
+            continue;
+         }
+         {
+            std::lock_guard<std::mutex> lock(stateMutex_);
+            connection_ = candidate;
+            host_ = seeds_[i].host;
+            port_ = seeds_[i].port;
+            active_ = true;  // enable runtime seed failover (issue #12)
+         }
+         return;
+      }
+
+      // Every seed was unreachable. Report them all so a bad connection string is
+      // diagnosable (the Java client tolerates this and defers to the first op; we
+      // keep connect()'s "establish >=1 connection or throw" contract).
+      std::string msg = "Hot Rod connect failed: all seed servers unreachable:";
+      for (const auto &f : failures)
+         msg += " " + f + ";";
+      throw HotRodClientException(msg, FailurePhase::BeforeSend);
    }
 
    void RemoteCache::disconnect()
    {
-      connection_->close();
+      // Copy the bootstrap connection out under the lock (it can be reassigned by
+      // runtime failover), then close() OUTSIDE the lock: close() joins the read
+      // loop, which may be blocked in handleTopologyUpdate waiting on stateMutex_.
+      std::shared_ptr<MultiplexedConnection> conn;
+      {
+         std::lock_guard<std::mutex> lock(stateMutex_);
+         active_ = false;  // stop runtime seed failover; ops after disconnect fail
+         conn = connection_;
+      }
+      if (conn)
+         conn->close();
    }
 
    bool RemoteCache::isConnected() const
    {
+      std::lock_guard<std::mutex> lock(stateMutex_);
       return connection_ && connection_->isConnected();
    }
 
@@ -1010,6 +1059,25 @@ namespace hotrod
                   break;
                }
 
+            // Seed fallback (issue #12): every known server is unreachable → try
+            // the configured seeds to re-bootstrap. Gated on:
+            //  - proxyToNonOwner_: a seed serving a non-owned key is a proxy,
+            //    exactly what proxyToNonOwner=false forbids (D5); when off we keep
+            //    the ownersExhausted throw instead of falling back to a seed.
+            //  - !tried.empty(): only fall back when we actually attempted and
+            //    failed to reach a server. If every candidate was *excluded* by the
+            //    caller (nothing tried), honor that exhaustion rather than rescuing
+            //    via a seed that may alias an excluded server (see selectAnyServer).
+            if (proxyToNonOwner_ && !tried.empty())
+            {
+               if (auto conn = tryConnectSeeds(ctx.excludeNodes, tried))
+               {
+                  if (triedOut)
+                     *triedOut = tried;
+                  return conn;
+               }
+            }
+
             fprintf(stderr, "[WARN] No servers available for segment %d\n", segment);
             if (triedOut)
                *triedOut = tried;
@@ -1024,8 +1092,22 @@ namespace hotrod
          }
       }
 
-      // Fallback: use default connection
-      return connection_;
+      // Fallback: no hash topology, or no owners for this key (incl. BASIC mode and
+      // empty topology) → bootstrap via the seed list. tryConnectSeeds prefers the
+      // live connection_, so the common case stays a no-op reuse (issue #12).
+      std::vector<ServerAddress> tried;
+      if (auto conn = tryConnectSeeds(ctx.excludeNodes, tried))
+      {
+         if (triedOut)
+            *triedOut = tried;
+         return conn;
+      }
+      if (triedOut)
+         *triedOut = tried;
+      throw HotRodClientException("No servers available (seed servers unreachable)",
+                                  FailurePhase::BeforeSend, std::nullopt,
+                                  unionNodes(ctx.excludeNodes, tried),
+                                  /*ownersExhausted=*/false);
    }
 
    std::shared_ptr<MultiplexedConnection> RemoteCache::selectAnyServer(const RetryContext &ctx,
@@ -1039,51 +1121,120 @@ namespace hotrod
       for (const auto &server : topology_.getServers())
          allAddrs.push_back({server.host, server.port});
 
-      // Early ping: no topology received yet → nothing to route over, so use the
-      // seed connection so the very first ping still works.
-      if (allAddrs.empty())
+      std::vector<ServerAddress> tried;
+
+      // Try known topology servers first (none if no topology received yet), minus
+      // the exclusion set, in topology order. Reuses the pure, unit-tested
+      // orderKeyCandidates() with an empty owner list (no key → no owners).
+      if (!allAddrs.empty())
+      {
+         std::vector<ServerAddress> candidates =
+             orderKeyCandidates({}, allAddrs, ctx.excludeNodes, true);
+         if (candidates.empty())
+         {
+            // Topology is known but the caller excluded every server. Honor that —
+            // do NOT rescue via a seed (a seed can alias an excluded server under a
+            // different address, e.g. localhost vs. its topology container IP). This
+            // is caller-driven exhaustion, distinct from "all servers unreachable".
+            if (triedOut)
+               *triedOut = tried;  // empty
+            throw HotRodClientException("No servers available (all excluded)",
+                                        FailurePhase::BeforeSend, std::nullopt,
+                                        unionNodes(ctx.excludeNodes, tried),
+                                        /*ownersExhausted=*/false);
+         }
+         for (const auto &cand : candidates)
+         {
+            tried.push_back(cand);
+            try
+            {
+               std::shared_ptr<MultiplexedConnection> conn =
+                   getConnectionForServer(ServerInfo(cand.host, cand.port, 0));
+               if (triedOut)
+                  *triedOut = tried;
+               return conn;
+            }
+            catch (const std::exception &e)
+            {
+               fprintf(stderr, "[WARN] Failed to connect to %s:%u: %s\n",
+                       cand.host.c_str(), cand.port, e.what());
+               // Continue to next candidate
+            }
+         }
+      }
+
+      // No topology yet (e.g. the very first ping), or every topology server we were
+      // allowed to try was unreachable → fall back to the configured seed list
+      // (issue #12). tryConnectSeeds prefers the live connection_, so an early ping
+      // before any topology still works via the bootstrap connection, as before.
+      if (auto conn = tryConnectSeeds(ctx.excludeNodes, tried))
       {
          if (triedOut)
-            triedOut->clear();
+            *triedOut = tried;
+         return conn;
+      }
+
+      // Nothing reachable. Nothing was sent (BeforeSend). ownersExhausted is always
+      // false for a keyless op.
+      fprintf(stderr, "[WARN] No servers available for keyless operation\n");
+      if (triedOut)
+         *triedOut = tried;
+      throw HotRodClientException("No servers available (all topology members and "
+                                  "seed servers unreachable)",
+                                  FailurePhase::BeforeSend, std::nullopt,
+                                  unionNodes(ctx.excludeNodes, tried),
+                                  /*ownersExhausted=*/false);
+   }
+
+   std::shared_ptr<MultiplexedConnection> RemoteCache::tryConnectSeeds(
+       const std::vector<ServerAddress> &exclude, std::vector<ServerAddress> &tried)
+   {
+      // Caller holds stateMutex_ (see header). Only (re)connect to seeds within the
+      // connect()..disconnect() window. Outside it (before connect, after
+      // disconnect) return the bootstrap connection_ unchanged so the op fails as it
+      // did before this feature — never silently re-establish a connection.
+      if (!active_)
+         return connection_;
+
+      // Fast path: reuse the live bootstrap
+      // connection unless its own target is excluded or already tried this attempt
+      // — so the happy path (empty topology / BASIC mode) does no new I/O.
+      const ServerAddress current{host_, port_};
+      auto inList = [](const std::vector<ServerAddress> &v, const ServerAddress &a) {
+         return std::find(v.begin(), v.end(), a) != v.end();
+      };
+      if (connection_ && connection_->isConnected() &&
+          !inList(exclude, current) && !inList(tried, current))
+      {
          return connection_;
       }
 
-      // Keyless candidates: every server minus the exclusion set, in topology
-      // order. Reuses the pure, unit-tested orderKeyCandidates() with an empty
-      // owner list (no key → no owners); the proxy flag is irrelevant here since
-      // there are no owners, so all servers come from the allServers pass.
-      std::vector<ServerAddress> candidates =
-          orderKeyCandidates({}, allAddrs, ctx.excludeNodes, true);
-
-      std::vector<ServerAddress> tried;
-      for (const auto &cand : candidates)
+      // Otherwise walk the configured seeds in order, minus excluded/already-tried
+      // (reuses the pure, unit-tested ordering/dedup helper). The first reachable
+      // seed is adopted as the new bootstrap connection_ so the next op's fast path
+      // reuses it instead of re-probing a dead one (runtime failover, issue #12).
+      const std::vector<ServerAddress> seedCands =
+          orderKeyCandidates({}, seeds_, unionNodes(exclude, tried), true);
+      for (const auto &seed : seedCands)
       {
-         tried.push_back(cand);
+         tried.push_back(seed);
          try
          {
             std::shared_ptr<MultiplexedConnection> conn =
-                getConnectionForServer(ServerInfo(cand.host, cand.port, 0));
-            if (triedOut)
-               *triedOut = tried;
+                getConnectionForServer(ServerInfo(seed.host, seed.port, 0));
+            connection_ = conn;
+            host_ = seed.host;
+            port_ = seed.port;
             return conn;
          }
          catch (const std::exception &e)
          {
-            fprintf(stderr, "[WARN] Failed to connect to %s:%u: %s\n",
-                    cand.host.c_str(), cand.port, e.what());
-            // Continue to next candidate
+            fprintf(stderr, "[WARN] Seed %s:%u unreachable: %s\n",
+                    seed.host.c_str(), seed.port, e.what());
+            // Continue to next seed
          }
       }
-
-      // Topology existed but every server was excluded or unreachable. Nothing was
-      // sent (BeforeSend). ownersExhausted is always false for a keyless op.
-      fprintf(stderr, "[WARN] No servers available for keyless operation\n");
-      if (triedOut)
-         *triedOut = tried;
-      throw HotRodClientException("No servers available in topology",
-                                  FailurePhase::BeforeSend, std::nullopt,
-                                  unionNodes(ctx.excludeNodes, tried),
-                                  /*ownersExhausted=*/false);
+      return nullptr;
    }
 
    std::shared_ptr<MultiplexedConnection> RemoteCache::getConnectionForServer(const ServerInfo &server)
