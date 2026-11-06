@@ -1149,16 +1149,36 @@ while wiring it: the mounted keystore must be world-readable (the in-container u
 can't read a 0600 `:ro` mount → `FileNotFoundException: … (Permission denied)`), and
 `keystore-password` is deprecated in favor of `password` on the `<keystore>` element.
 
-**SIGPIPE on a dropped TLS connection (library robustness).** The first integration
-run was killed by SIGPIPE (exit 141): a client-side write onto a closed TLS peer
-raises SIGPIPE, whose default disposition terminates the process. `close()`'s quiet
-shutdown prevents the *teardown* write, but the data path can still trip it. Both
-test mains (unit + integration) install `std::signal(SIGPIPE, SIG_IGN)` — the
-conventional stance that the application owns signal disposition. **Open follow-up:**
-decide whether the client library itself should be SIGPIPE-safe by default
-(e.g. `MSG_NOSIGNAL` on the plain send path; a custom BIO or documented app-level
-`SIG_IGN` for the OpenSSL path) rather than relying on the app. Not fixed in this
-slice.
+**SIGPIPE on a dropped TLS connection — fixed at the library, per-connection.**
+The first integration run was killed by SIGPIPE (exit 141): a client-side write onto
+a closed TLS peer raises SIGPIPE, whose default disposition terminates the process.
+We checked the authoritative Java client — it has *no* SIGPIPE handling because the
+**JVM** sets `SIGPIPE` to `SIG_IGN` process-wide at startup; a broken connection then
+surfaces as an `IOException`. That is a *runtime* (process-owner) decision. Our C++
+client is a **guest** linked into someone else's process and has no business flipping
+process-global signal disposition — a global `SIG_IGN` would, e.g., break a
+well-behaved CLI tool that relies on SIGPIPE for shell-pipeline semantics. So instead
+of mirroring the JVM's global flip, we suppress SIGPIPE **per connection**, confining
+the effect to our own sockets (option 2):
+- Plain `send()` uses `MSG_NOSIGNAL` on Linux (`HOTROD_SEND_FLAGS`).
+- macOS/BSD set the socket option `SO_NOSIGPIPE` after `socket()` — socket-level, so
+  it also covers OpenSSL's writes on that fd.
+- Linux's TLS path routes all OpenSSL socket I/O through a **custom `BIO`**
+  (`sigpipeSafeBioMethod` in `Connection.cpp`) whose write uses `MSG_NOSIGNAL`. One
+  mechanism covers every OpenSSL write — `SSL_write`, plus the writes
+  `SSL_connect`/`SSL_read` trigger internally (handshake, renegotiation, TLS 1.3
+  post-handshake). The BIO never closes the fd (Connection owns it); `SSL_set_bio`
+  takes ownership and frees it in `SSL_free`. Windows has no SIGPIPE, so it keeps the
+  default `SSL_set_fd` BIO.
+
+Net: observably identical to Java (dropped connection → our thrown exception, process
+survives), but with a *narrower blast radius* than the JVM — we never touch the app's
+global signal disposition. The integration test's `main()` deliberately does **not**
+install `SIG_IGN`, so it genuinely proves the library is self-sufficient (exit 0, not
+141). The unit test still installs `SIG_IGN`, but only to guard its in-process echo
+*server* thread (harness code doing raw `SSL_write`/`SSL_shutdown`), not the client.
+`close()` additionally uses quiet shutdown so teardown performs no close_notify write
+at all.
 
 **Deferred (unchanged, issue #10):** mutual TLS / client cert+key, Java keystore
 formats, cipher/protocol/provider tuning, `connect_timeout`/`socket_timeout`,

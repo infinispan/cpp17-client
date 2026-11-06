@@ -23,6 +23,18 @@
     #include <errno.h>
 #endif
 
+// Per-send SIGPIPE suppression (option 2: no process-global signal change).
+// Linux has the MSG_NOSIGNAL send flag; the BSDs/macOS instead use the
+// SO_NOSIGPIPE socket option (set in connect()), so no flag is needed there;
+// Windows has no SIGPIPE at all.
+#if defined(_WIN32)
+    #define HOTROD_SEND_FLAGS 0
+#elif defined(MSG_NOSIGNAL)
+    #define HOTROD_SEND_FLAGS MSG_NOSIGNAL
+#else
+    #define HOTROD_SEND_FLAGS 0
+#endif
+
 namespace hotrod {
 
 namespace {
@@ -48,6 +60,68 @@ bool isLiteralIp(const std::string& host) {
     return inet_pton(AF_INET, host.c_str(), buf) == 1 ||
            inet_pton(AF_INET6, host.c_str(), buf) == 1;
 }
+
+#ifndef _WIN32
+// A custom OpenSSL BIO over a plain fd whose write uses HOTROD_SEND_FLAGS
+// (MSG_NOSIGNAL on Linux). OpenSSL's default socket BIO writes with plain
+// write()/send(), so a TLS write onto a dropped peer would raise SIGPIPE and
+// kill the process. Routing every OpenSSL socket write through this BIO confines
+// the suppression to our connections (no process-global SIG_IGN) and covers all
+// writes — app data via SSL_write, plus the writes SSL_connect/SSL_read trigger
+// internally (handshake, renegotiation, TLS 1.3 post-handshake). The BIO never
+// closes the fd; Connection owns the socket lifecycle. Windows has no SIGPIPE,
+// so there the default SSL_set_fd BIO is used unchanged.
+int bioWrite(BIO* b, const char* buf, int len) {
+    const int fd = static_cast<int>(reinterpret_cast<intptr_t>(BIO_get_data(b)));
+    BIO_clear_retry_flags(b);
+    const ssize_t n = ::send(fd, buf, static_cast<size_t>(len), HOTROD_SEND_FLAGS);
+    if (n <= 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+        BIO_set_retry_write(b);
+    }
+    return static_cast<int>(n);
+}
+
+int bioRead(BIO* b, char* buf, int len) {
+    const int fd = static_cast<int>(reinterpret_cast<intptr_t>(BIO_get_data(b)));
+    BIO_clear_retry_flags(b);
+    const ssize_t n = ::recv(fd, buf, static_cast<size_t>(len), 0);
+    if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+        BIO_set_retry_read(b);
+    }
+    return static_cast<int>(n);
+}
+
+long bioCtrl(BIO*, int cmd, long, void*) {
+    // Nothing is buffered, so FLUSH is a no-op success; everything else (pending
+    // counts, eof, push/pop, close flags) defaults to 0, which is correct here.
+    return cmd == BIO_CTRL_FLUSH ? 1 : 0;
+}
+
+int bioCreate(BIO* b) {
+    BIO_set_init(b, 0);
+    BIO_set_data(b, nullptr);
+    return 1;
+}
+
+int bioDestroy(BIO* b) {
+    return b != nullptr;  // do not close the fd — Connection owns it
+}
+
+// The BIO_METHOD, created once and intentionally leaked for process lifetime.
+BIO_METHOD* sigpipeSafeBioMethod() {
+    static BIO_METHOD* method = [] {
+        BIO_METHOD* m = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK,
+                                     "hotrod sigpipe-safe socket");
+        BIO_meth_set_write(m, bioWrite);
+        BIO_meth_set_read(m, bioRead);
+        BIO_meth_set_ctrl(m, bioCtrl);
+        BIO_meth_set_create(m, bioCreate);
+        BIO_meth_set_destroy(m, bioDestroy);
+        return m;
+    }();
+    return method;
+}
+#endif  // !_WIN32
 
 }  // namespace
 
@@ -110,6 +184,17 @@ void Connection::connect() {
 #else
         if (socket_ == -1) {
             continue;
+        }
+#endif
+
+        // SIGPIPE suppression on platforms with the socket-level option (macOS/
+        // BSD). This covers both plain send() and OpenSSL's writes on this fd.
+        // Linux lacks it and uses MSG_NOSIGNAL per write instead (HOTROD_SEND_FLAGS
+        // + the custom TLS BIO).
+#ifdef SO_NOSIGPIPE
+        {
+            int on = 1;
+            setsockopt(socket_, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
         }
 #endif
 
@@ -255,9 +340,23 @@ void Connection::startTls() {
         }
     }
 
+#ifdef _WIN32
+    // Windows has no SIGPIPE; the default socket BIO is fine.
     if (SSL_set_fd(ssl_, static_cast<int>(socket_)) != 1) {
         throw std::runtime_error("TLS: SSL_set_fd failed: " + opensslErrors());
     }
+#else
+    // Route all OpenSSL socket I/O through our MSG_NOSIGNAL BIO so a write onto a
+    // dropped peer never raises SIGPIPE. SSL takes ownership of the BIO (same BIO
+    // for read and write) and frees it in SSL_free; it does not close the fd.
+    BIO* bio = BIO_new(sigpipeSafeBioMethod());
+    if (!bio) {
+        throw std::runtime_error("TLS: BIO_new failed: " + opensslErrors());
+    }
+    BIO_set_data(bio, reinterpret_cast<void*>(static_cast<intptr_t>(socket_)));
+    BIO_set_init(bio, 1);
+    SSL_set_bio(ssl_, bio, bio);
+#endif
 
     const int rc = SSL_connect(ssl_);
     if (rc != 1) {
@@ -301,7 +400,7 @@ void Connection::send(const ByteArray& data) {
             throw std::runtime_error("send failed: " + std::to_string(WSAGetLastError()));
         }
 #else
-        ssize_t sent = ::send(socket_, ptr, remaining, 0);
+        ssize_t sent = ::send(socket_, ptr, remaining, HOTROD_SEND_FLAGS);
         if (sent == -1) {
             throw std::runtime_error("send failed: " + std::string(strerror(errno)));
         }
