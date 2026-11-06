@@ -95,6 +95,14 @@ namespace hotrod
          }
       }
 
+      // TLS: the hotrods:// scheme enables it; the server-auth PEM subset of the
+      // Java query keys (trust_store_file_name / sni_host_name /
+      // ssl_hostname_validation) is carried in parsed.tls (issue #18).
+      if (parsed.tls)
+      {
+         cache->setTls(*parsed.tls);
+      }
+
       return cache;
    }
 
@@ -121,6 +129,7 @@ namespace hotrod
          candidate->setProtocolVersion(protocolVersion_);
          candidate->setClientIntelligence(clientIntelligence_);
          candidate->setAuthentication(auth_);
+         candidate->setTls(tls_);
          try
          {
             candidate->connect();
@@ -1270,6 +1279,7 @@ namespace hotrod
       newConnection->setProtocolVersion(protocolVersion_);
       newConnection->setClientIntelligence(clientIntelligence_);
       newConnection->setAuthentication(auth_);
+      newConnection->setTls(tls_);
 
       // connect() can throw if server is unreachable - let it propagate to caller
       newConnection->connect();

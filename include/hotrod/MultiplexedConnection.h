@@ -4,6 +4,7 @@
 #include "TopologyInfo.h"
 #include "HeaderCodec.h"
 #include "Authentication.h"
+#include "TlsConfig.h"
 #include <string>
 #include <map>
 #include <mutex>
@@ -150,6 +151,13 @@ public:
     void setAuthentication(const Authentication& auth);
 
     /**
+     * Set TLS transport configuration.
+     * Must be called before connect(). When tls.enabled is true, connect() wraps
+     * the socket in a TLS session before the SASL handshake and read loop.
+     */
+    void setTls(const TlsConfig& tls);
+
+    /**
      * Get current topology ID.
      */
     int32_t getTopologyId() const;
@@ -188,6 +196,9 @@ private:
 
     // SASL authentication (disabled by default). Applied during connect().
     Authentication auth_;
+
+    // TLS transport (disabled by default). Applied to the socket during connect().
+    TlsConfig tls_;
 
     /**
      * Read loop (runs in dedicated thread).

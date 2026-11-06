@@ -196,9 +196,15 @@ coverage breakdown and counts.
 - ✅ **SASL/SCRAM authentication** (`setAuthentication(...)`) — end-to-end for the
   SCRAM family (`SCRAM-SHA-1`/`SCRAM-SHA-256`/`SCRAM-SHA-512`), applied to every
   connection; see [`documentation/topics/security.adoc`](documentation/topics/security.adoc)
-- ✅ **Hot Rod URI** (`RemoteCache::fromUri("hotrod://...")`) — build a client from a
-  connection string (hosts, credentials, `sasl_mechanism`/`client_intelligence`/
-  `protocol_version` params); `hotrod://` only for now (TLS and more in issue #10)
+- ✅ **Hot Rod URI** (`RemoteCache::fromUri("hotrod[s]://...")`) — build a client from
+  a connection string (hosts, credentials, `sasl_mechanism`/`client_intelligence`/
+  `protocol_version` params, and the server-auth TLS params below); timeouts and more
+  in issue #10
+- ✅ **Server-authenticated TLS** (`setTls(...)` / `hotrods://`, issue #18) — wraps
+  every connection in a TLS session (OpenSSL). PEM trust (`ca_file`, empty = system
+  store), SNI, and host-name validation (default on); min TLS 1.2. URI keys:
+  `trust_store_file_name` (PEM CA), `sni_host_name`, `ssl_hostname_validation`.
+  Mutual TLS / keystore formats are deferred (issue #10)
 - ✅ **Multi-server seed list** (issue #12) — all hosts in the URI become seed
   servers with startup *and* runtime failover (ops fall back to the seed list when
   the connected server dies or no topology is known, e.g. in BASIC mode)
@@ -249,14 +255,23 @@ auto cache = RemoteCache::fromUri(
     "my-cache");
 cache->connect();
 
-// Supports hotrod:// only. All hosts become seed servers (issue #12): connect()
-// tries each in order, and ops fall back to the seed list when the connected
-// server dies or no topology is known (e.g. BASIC mode). Credentials
+// Supports hotrod:// and hotrods:// (TLS). All hosts become seed servers (issue
+// #12): connect() tries each in order, and ops fall back to the seed list when the
+// connected server dies or no topology is known (e.g. BASIC mode). Credentials
 // enable SCRAM, and sasl_mechanism/client_intelligence/protocol_version (Java
-// "4.0"/"4.1" form) are honoured. Userinfo and query values are percent-decoded
-// (RFC 3986), so a reserved character in a password is written encoded — e.g. a
-// password of p@ss is "...://admin:p%40ss@host". hotrods:// (TLS), timeouts, and
-// other parameters throw for now (see issue #10).
+// "4.0"/"4.1" form) are honoured. hotrods:// enables server-auth TLS; the
+// trust_store_file_name (PEM CA) / sni_host_name / ssl_hostname_validation params
+// map to setTls(...). Userinfo and query values are percent-decoded (RFC 3986), so
+// a reserved character in a password is written encoded — e.g. a password of p@ss
+// is "...://admin:p%40ss@host". Timeouts, mutual TLS, and other parameters throw
+// for now (see issue #10).
+//
+//   // TLS from a URI (private CA):
+//   auto c = RemoteCache::fromUri("hotrods://cache:11222?trust_store_file_name=/etc/pki/ca.pem");
+//   // or programmatically:
+//   RemoteCache cache("cache", 11222);
+//   cache.setTls("/etc/pki/ca.pem");  // ca_file; empty = system trust store
+//   cache.connect();
 ```
 
 ### Future
@@ -270,8 +285,9 @@ cache->connect();
   `replaceWithVersion`, `removeWithVersion`, `putIfAbsent`, `replace`, `containsKey`
 - ✅ **Step 11 — Error handling** (shipped): ERROR response parsing, typed exception,
   user-decided retry (keyed + keyless)
+- ✅ **Server-authenticated TLS** (shipped, issue #18): `hotrods://` + `setTls(...)`
 - **Step 12 — Bulk operations** (next): `GET_ALL`, `PUT_ALL`, `BULK_GET`
-- Also: multiplexing benchmarks, TLS/SSL support
+- Also: multiplexing benchmarks, mutual TLS (client cert/key, issue #10)
 
 ## Project Structure
 

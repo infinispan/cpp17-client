@@ -7,6 +7,7 @@
 #include "ConsistentHash.h"
 #include "RetryContext.h"
 #include "Authentication.h"
+#include "TlsConfig.h"
 #include <string>
 #include <memory>
 #include <cstdint>
@@ -385,6 +386,44 @@ public:
     }
 
     /**
+     * Configure TLS transport encryption. Must be called before connect().
+     *
+     * Enables TLS on every connection the client opens (the seed connection and
+     * every topology-discovered cluster member). This first slice is
+     * server-authenticated TLS with PEM trust material; mutual TLS is not yet
+     * supported (issue #10). See TlsConfig for field semantics.
+     *
+     * @param ca_file             PEM CA file to verify the server; empty uses the
+     *                            system/default trust store.
+     * @param sni_host            SNI server name; empty derives it from the host
+     *                            (and is skipped for literal IP addresses).
+     * @param hostname_validation verify the certificate matches the host name
+     *                            (default true; chain verification is always on).
+     */
+    void setTls(const std::string& ca_file = "",
+                const std::string& sni_host = "",
+                bool hostname_validation = true) {
+        tls_.enabled = true;
+        tls_.ca_file = ca_file;
+        tls_.sni_host = sni_host;
+        tls_.hostname_validation = hostname_validation;
+    }
+
+    /**
+     * Configure TLS from a prebuilt TlsConfig. Must be called before connect().
+     */
+    void setTls(const TlsConfig& tls) {
+        tls_ = tls;
+    }
+
+    /**
+     * Current TLS configuration (tls_.enabled is false by default).
+     */
+    const TlsConfig& getTls() const {
+        return tls_;
+    }
+
+    /**
      * Control non-owner proxy fallback for hash-aware routing (Step 11b, D5).
      *
      * When true (the default, matching the Java client), if none of a key's
@@ -516,6 +555,7 @@ private:
     // a connection via a seed. Guarded by stateMutex_ (issue #12).
     bool active_ = false;
     Authentication auth_;  // SASL auth config (disabled by default); applied at connect()
+    TlsConfig tls_;        // TLS transport config (disabled by default); applied at connect()
 
     // stateMutex_ guards the routing/pool state below (topology_, consistentHash_,
     // connectionPool_) against concurrent access by the read-loop thread (topology

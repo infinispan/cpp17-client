@@ -95,6 +95,7 @@ if(GTest_FOUND)
         tests/unit/AuthCodecTest.cpp
         tests/unit/HotRodURITest.cpp
         tests/unit/SaslAuthenticatorTest.cpp
+        tests/unit/TlsConnectionTest.cpp
     )
 
     target_link_libraries(unit_tests
@@ -103,6 +104,12 @@ if(GTest_FOUND)
             GTest::gtest
             GTest::gtest_main
     )
+
+    # TlsConnectionTest reads PEM fixtures by absolute path (no working-dir
+    # assumption); the server side links OpenSSL directly.
+    target_compile_definitions(unit_tests PRIVATE
+        TLS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/tls")
+    target_link_libraries(unit_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
     add_test(NAME UnitTests COMMAND unit_tests)
 

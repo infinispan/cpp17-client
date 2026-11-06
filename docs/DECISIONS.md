@@ -1075,3 +1075,67 @@ overclaim until now.
 entry) — the `TIMEOUT 300` guard per ctest suite plus `cli.sh -f -` batch mode keep
 a server-side change failing fast rather than hanging CI. Verified the full
 multi-node suite set green against `:latest` = 16.3.0 on 2026-10-19 after the switch.
+
+## 2026-11-06 — Server-authenticated TLS for `hotrods://` (issue #18, sub-issue of #10)
+
+**What:** first TLS slice. `hotrods://` no longer throws; the client wraps every
+connection it opens (seed + topology-discovered) in a TLS session over OpenSSL.
+New pure value `TlsConfig` (`include/hotrod/TlsConfig.h`); `RemoteCache::setTls(...)`
+mirrors `setAuthentication` and is pushed to each `MultiplexedConnection` →
+`Connection` at the same two build sites as auth/protocol/intelligence. The
+handshake lives in `Connection::startTls()` (`src/transport/Connection.cpp`):
+`TLS_client_method`, min TLS 1.2, trust anchors from a PEM `ca_file` (empty =
+`SSL_CTX_set_default_verify_paths`, the system store), `SSL_VERIFY_PEER` always,
+SNI via `SSL_set_tlsext_host_name`, host-name match via `SSL_set1_host`. `send`/
+`receive` route through `SSL_write`/`SSL_read` when a session is live.
+
+**Scope decisions (settled with the maintainer before coding):**
+- **Server-auth only this slice.** Mutual TLS (client cert/key) is deferred.
+- **PEM, not Java keystores.** This is an OpenSSL-native client; JKS/PKCS12 +
+  type/alias/store-password make no sense here. We deliberately diverge from the
+  Java `SslConfiguration` surface. Note the semantic reuse: the URI key
+  `trust_store_file_name` (a keystore in Java) is interpreted here as a **PEM CA
+  file**; `trust_store_type` is not accepted (PEM is implied). Java itself supports
+  `trust_store_type=pem`, so this isn't alien to Infinispan.
+- **URI = option C.** `hotrods://` enables TLS with defaults; the URI additionally
+  recognizes exactly the three Java-named keys that map onto `TlsConfig`
+  (`trust_store_file_name`→`ca_file`, `sni_host_name`→`sni_host`,
+  `ssl_hostname_validation`→`hostname_validation`). Every settable `TlsConfig`
+  field is reachable both programmatically and from the URI; nothing more. The
+  other recognized Java TLS keys (`use_ssl`, `key_store_*`, `*_store_type`,
+  `*_password`, `key_alias`, `ssl_protocol`/`ciphers`/`named_groups`/`provider`/
+  `context`) are rejected with "not supported yet (… deferred; issue #10)" rather
+  than silently ignored — preserving the parser's fail-fast contract. TLS params on
+  a plain `hotrod://` URI are a hard error ("require the hotrods:// scheme").
+
+**Behavioral calls:**
+- **Min TLS 1.2** (`SSL_CTX_set_min_proto_version`).
+- **SNI skipped for literal IPs** (RFC 6066) — and such a name is not host-validated
+  as a DNS name either (`isLiteralIp` guards both). To dial a loopback IP but still
+  verify a name, set `sni_host` to the DNS name (what the unit test does).
+- **`hostname_validation=false` disables only the host-name match, not chain
+  verification** — chain verification is unconditional. Matches Java's
+  `hostnameValidation` semantics.
+- **Quiet shutdown on teardown.** `Connection::close()` sets
+  `SSL_set_quiet_shutdown` before `SSL_shutdown`, so teardown never writes a
+  close_notify. Writing it to an already-dead peer raises SIGPIPE/EPIPE, which with
+  the default disposition kills the process for no benefit. (The in-process test
+  server also installs `SIG_IGN` for SIGPIPE, since its echo thread writes on close.)
+
+**OpenSSL::SSL link is now live.** Supersedes the 2026-10-09 "Aside": `CMakeLists.txt`
+already linked `OpenSSL::SSL` as dead weight next to libcrypto; the handshake code
+now uses it (`SSL_*`), so the link is no longer dead. The entry's "folded into the
+TLS work" prediction holds.
+
+**Tests:** `tests/unit/TlsConnectionTest.cpp` drives the real handshake against an
+in-process OpenSSL echo server (loopback, ephemeral port) presenting a PEM leaf
+(SAN=`test.local`) signed by a test CA — fixtures in `tests/fixtures/tls/`
+(36500-day validity; path injected via the `TLS_FIXTURE_DIR` compile definition).
+Cases: trusted-CA + matching name → handshake + encrypted round-trip; untrusted CA
+→ throw; name mismatch with validation on → throw, with validation off → succeed.
+POSIX-only (like the integration suites); the cross-platform URI-level parsing is in
+`HotRodURITest.cpp`. Full unit suite green (260 tests), stable across repeated runs.
+
+**Deferred (unchanged, issue #10):** mutual TLS / client cert+key, Java keystore
+formats, cipher/protocol/provider tuning, `connect_timeout`/`socket_timeout`,
+non-SCRAM SASL, `protocol_version=AUTO`/3.x.

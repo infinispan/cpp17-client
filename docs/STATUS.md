@@ -4,7 +4,7 @@
 > If any other doc disagrees with this file, this file wins. Point-in-time
 > snapshots live in [`archive/`](archive/) and are historical only.
 >
-> **Last updated:** 2026-10-19
+> **Last updated:** 2026-11-06
 
 ---
 
@@ -41,8 +41,9 @@ _The 1–3 concrete things to do next. Keep this short and current._
    (two `TODO`s in `src/operations/RemoteCache.cpp`).
 
 _Recently shipped (detail in "Working and shipped" + [`DECISIONS.md`](DECISIONS.md)):
-multi-server seed list + failover (#12, 2026-10-19), Hot Rod URI `fromUri` (#9),
-SASL/SCRAM auth, Step 11 error handling + user-decided retry, Step 10 metadata/CAS._
+server-authenticated TLS for `hotrods://` (#18, 2026-11-06), multi-server seed
+list + failover (#12), Hot Rod URI `fromUri` (#9), SASL/SCRAM auth, Step 11 error
+handling + user-decided retry, Step 10 metadata/CAS._
 
 ---
 
@@ -62,12 +63,15 @@ pull from here next. Step numbers follow
   concurrent throughput; unmeasured so far.
 - [ ] **Code cleanup:** read header "other params" when `paramCount > 0`
   (`src/operations/RemoteCache.cpp:140,182`).
-- [ ] **Hot Rod URI — deferred features (issue #10):** `hotrods://`/TLS +
-  cert/SNI/hostname-validation params, `connect_timeout`/`socket_timeout`,
-  non-SCRAM SASL (PLAIN/OAUTHBEARER `token`), `protocol_version=AUTO`/3.x. Each
-  drops its "unsupported" throw from `HotRodURI::parse` once the capability lands.
-  (Multi-server seed list is already shipped — issue #12; see "Working and shipped".)
-- [ ] **TLS/SSL support** (transport encryption). Also unblocks `hotrods://` above.
+- [ ] **Hot Rod URI — deferred features (issue #10):** `connect_timeout`/
+  `socket_timeout`, non-SCRAM SASL (PLAIN/OAUTHBEARER `token`),
+  `protocol_version=AUTO`/3.x. Each drops its "unsupported" throw from
+  `HotRodURI::parse` once the capability lands. (Multi-server seed list — #12 —
+  and server-auth TLS — #18 — are already shipped; see "Working and shipped".)
+- [ ] **Mutual TLS + TLS tuning (deferred part of #18/#10):** client cert/key
+  (`key_store_*`), Java keystore formats (JKS/PKCS12, `*_store_type`/password/
+  alias), and `ssl_protocol`/`ssl_ciphers`/`ssl_named_groups`/`ssl_provider`.
+  These URI keys are currently recognized and rejected with "not supported yet".
 
 **Longer horizon (Step 14+ advanced features):** transactions (XA), client
 listeners/events, counters, Ickle queries, streaming ops (4.1+), multimap,
@@ -82,16 +86,24 @@ Rod URI `fromUri` (#9), multi-server seed list + failover (#12)._
 
 ---
 
-## Current state (verified 2026-10-19)
+## Current state (verified 2026-11-06)
 
 **Working and shipped:**
 - **Hot Rod URI (`RemoteCache::fromUri`)** — build a configured client from a
-  `hotrod://[user:pass@]host[:port][,host...][?k=v]` connection string (issue #9);
+  `hotrod[s]://[user:pass@]host[:port][,host...][?k=v]` connection string (issue #9);
   pure header-only parser `HotRodURI::parse` (`include/hotrod/HotRodURI.h`).
-  `hotrod://` scheme only, SCRAM via credentials,
-  `sasl_mechanism`/`client_intelligence`/`protocol_version` params; userinfo and
-  query values are percent-decoded (java.net.URI parity); unsupported
-  schemes/params throw. TLS/timeouts/non-SCRAM deferred (issue #10)
+  `hotrod://` and `hotrods://` (TLS) schemes, SCRAM via credentials,
+  `sasl_mechanism`/`client_intelligence`/`protocol_version` + the server-auth TLS
+  params (`trust_store_file_name`/`sni_host_name`/`ssl_hostname_validation`);
+  userinfo and query values are percent-decoded (java.net.URI parity); unsupported
+  schemes/params throw. timeouts/non-SCRAM/mutual-TLS deferred (issue #10)
+- **Server-authenticated TLS (`hotrods://`, issue #18)** — `RemoteCache::setTls(...)`
+  (and the `hotrods://` scheme) wrap every connection the client opens (seed +
+  topology-discovered) in a TLS session over OpenSSL. PEM trust material
+  (`ca_file`, empty = system store), SNI (`sni_host`, skipped for literal IPs),
+  and host-name validation (`hostname_validation`, default on; chain verification
+  always on). Min TLS 1.2. `include/hotrod/TlsConfig.h`; handshake in
+  `src/transport/Connection.cpp`. Mutual TLS / keystore formats deferred (#10)
 - **Multi-server seed list + failover (`fromUri`, issue #12)** — all
   comma-separated hosts become seed servers. **Startup failover:** `connect()`
   tries each seed in order; all unreachable → one `HotRodClientException` listing

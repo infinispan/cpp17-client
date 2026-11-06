@@ -1,8 +1,14 @@
 #pragma once
 
 #include "Types.h"
+#include "TlsConfig.h"
 #include <string>
 #include <cstdint>
+
+// Forward-declare the OpenSSL types so this header does not drag <openssl/ssl.h>
+// into every translation unit that merely talks to a Connection.
+struct ssl_st;
+struct ssl_ctx_st;
 
 namespace hotrod {
 
@@ -27,6 +33,11 @@ class Connection {
 public:
     Connection(const std::string& host, uint16_t port);
     ~Connection();
+
+    // Configure TLS. Must be called before connect(). When tls.enabled is true,
+    // connect() performs a TLS handshake over the TCP socket and all subsequent
+    // send()/receive() traffic is encrypted.
+    void setTls(const TlsConfig& tls) { tls_ = tls; }
 
     // Connect to server
     void connect();
@@ -53,10 +64,21 @@ public:
     EntryMetadata receiveMetadata(); // entry_metadata (Protocol 4.0+)
 
 private:
+    // Perform the TLS handshake on the already-connected socket_ (server-auth,
+    // OpenSSL). Throws std::runtime_error with a descriptive message on failure.
+    void startTls();
+
     std::string host_;
     uint16_t port_;
     bool connected_;
     socket_t socket_;  // Socket descriptor (platform-specific)
+
+    // TLS state. tls_.enabled gates the handshake in connect(); when a session is
+    // live, ssl_ is non-null and send()/receive() route through it. ctx_ owns the
+    // per-connection OpenSSL context. Both are freed in close()/dtor.
+    TlsConfig  tls_;
+    ssl_st*    ssl_{nullptr};
+    ssl_ctx_st* ctx_{nullptr};
 };
 
 } // namespace hotrod

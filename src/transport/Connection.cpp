@@ -1,6 +1,11 @@
 #include "hotrod/Connection.h"
 #include <stdexcept>
 #include <cstring>
+#include <string>
+
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/x509v3.h>
 
 // Platform-specific includes
 #ifdef _WIN32
@@ -19,6 +24,32 @@
 #endif
 
 namespace hotrod {
+
+namespace {
+
+// Drain the OpenSSL error queue into a human-readable string for exceptions.
+std::string opensslErrors() {
+    std::string out;
+    unsigned long e;
+    char buf[256];
+    while ((e = ERR_get_error()) != 0) {
+        ERR_error_string_n(e, buf, sizeof(buf));
+        if (!out.empty()) out += "; ";
+        out += buf;
+    }
+    return out.empty() ? "unknown OpenSSL error" : out;
+}
+
+// True when host is a literal IPv4 or IPv6 address. SNI (RFC 6066) carries host
+// names only, so for a literal IP we neither send SNI nor use it for the
+// certificate host-name match (which would be a DNS-name check).
+bool isLiteralIp(const std::string& host) {
+    unsigned char buf[16];
+    return inet_pton(AF_INET, host.c_str(), buf) == 1 ||
+           inet_pton(AF_INET6, host.c_str(), buf) == 1;
+}
+
+}  // namespace
 
 // Platform-specific initialization
 #ifdef _WIN32
@@ -154,6 +185,95 @@ void Connection::connect() {
     if (!connected_) {
         throw std::runtime_error("Failed to connect to " + host_ + ":" + std::to_string(port_));
     }
+
+    // TLS handshake over the connected socket. On failure the socket is closed so
+    // the Connection is left in a clean, unconnected state.
+    if (tls_.enabled) {
+        try {
+            startTls();
+        } catch (...) {
+            close();
+            throw;
+        }
+    }
+}
+
+void Connection::startTls() {
+    // Client context. TLS_client_method() negotiates the highest mutually
+    // supported protocol; we additionally pin a sane floor of TLS 1.2.
+    ctx_ = SSL_CTX_new(TLS_client_method());
+    if (!ctx_) {
+        throw std::runtime_error("TLS: SSL_CTX_new failed: " + opensslErrors());
+    }
+    SSL_CTX_set_min_proto_version(ctx_, TLS1_2_VERSION);
+
+    // Trust anchors: an explicit PEM CA file, otherwise the system default store.
+    if (!tls_.ca_file.empty()) {
+        if (SSL_CTX_load_verify_locations(ctx_, tls_.ca_file.c_str(), nullptr) != 1) {
+            throw std::runtime_error("TLS: failed to load CA file '" + tls_.ca_file +
+                                     "': " + opensslErrors());
+        }
+    } else {
+        if (SSL_CTX_set_default_verify_paths(ctx_) != 1) {
+            throw std::runtime_error("TLS: failed to load system trust store: " +
+                                     opensslErrors());
+        }
+    }
+
+    // Always verify the server's certificate chain. The hostname match below is
+    // separately controlled by tls_.hostname_validation.
+    SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
+
+    ssl_ = SSL_new(ctx_);
+    if (!ssl_) {
+        throw std::runtime_error("TLS: SSL_new failed: " + opensslErrors());
+    }
+
+    // The SNI name / host-name to validate: an explicit override, else the
+    // connection host (never a literal IP).
+    const std::string serverName =
+        !tls_.sni_host.empty() ? tls_.sni_host : host_;
+    const bool nameIsIp = isLiteralIp(serverName);
+
+    // SNI (skipped for literal IPs per RFC 6066).
+    if (!nameIsIp) {
+        // SSL_set_tlsext_host_name takes a non-const char*; the string is copied.
+        if (SSL_set_tlsext_host_name(ssl_, serverName.c_str()) != 1) {
+            throw std::runtime_error("TLS: failed to set SNI host name: " +
+                                     opensslErrors());
+        }
+    }
+
+    // Host-name validation. SSL_set1_host makes OpenSSL enforce the match as part
+    // of chain verification; omitting it leaves only chain verification on. We do
+    // not validate a literal IP as a DNS name.
+    if (tls_.hostname_validation && !nameIsIp) {
+        SSL_set_hostflags(ssl_, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+        if (SSL_set1_host(ssl_, serverName.c_str()) != 1) {
+            throw std::runtime_error("TLS: failed to set validation host name: " +
+                                     opensslErrors());
+        }
+    }
+
+    if (SSL_set_fd(ssl_, static_cast<int>(socket_)) != 1) {
+        throw std::runtime_error("TLS: SSL_set_fd failed: " + opensslErrors());
+    }
+
+    const int rc = SSL_connect(ssl_);
+    if (rc != 1) {
+        // A verification failure surfaces a specific, actionable reason.
+        const long vr = SSL_get_verify_result(ssl_);
+        std::string msg = "TLS handshake with " + host_ + ":" +
+                          std::to_string(port_) + " failed";
+        if (vr != X509_V_OK) {
+            msg += ": certificate verification failed (";
+            msg += X509_verify_cert_error_string(vr);
+            msg += ")";
+        } else {
+            msg += ": " + opensslErrors();
+        }
+        throw std::runtime_error(msg);
+    }
 }
 
 void Connection::send(const ByteArray& data) {
@@ -165,6 +285,15 @@ void Connection::send(const ByteArray& data) {
     while (totalSent < data.size()) {
         const char* ptr = reinterpret_cast<const char*>(data.data()) + totalSent;
         size_t remaining = data.size() - totalSent;
+
+        if (ssl_) {
+            int sent = SSL_write(ssl_, ptr, static_cast<int>(remaining));
+            if (sent <= 0) {
+                throw std::runtime_error("TLS send failed: " + opensslErrors());
+            }
+            totalSent += static_cast<size_t>(sent);
+            continue;
+        }
 
 #ifdef _WIN32
         int sent = ::send(socket_, ptr, static_cast<int>(remaining), 0);
@@ -193,6 +322,19 @@ ByteArray Connection::receive(size_t length) {
     while (totalReceived < length) {
         char* ptr = reinterpret_cast<char*>(buffer.data()) + totalReceived;
         size_t remaining = length - totalReceived;
+
+        if (ssl_) {
+            int received = SSL_read(ssl_, ptr, static_cast<int>(remaining));
+            if (received <= 0) {
+                const int err = SSL_get_error(ssl_, received);
+                if (err == SSL_ERROR_ZERO_RETURN) {
+                    throw std::runtime_error("Connection closed by peer");
+                }
+                throw std::runtime_error("TLS recv failed: " + opensslErrors());
+            }
+            totalReceived += static_cast<size_t>(received);
+            continue;
+        }
 
 #ifdef _WIN32
         int received = ::recv(socket_, ptr, static_cast<int>(remaining), 0);
@@ -231,7 +373,30 @@ void Connection::shutdown() {
 }
 
 void Connection::close() {
+    // Tear down TLS first, independent of connected_ so a failed handshake in
+    // connect() still frees the context it allocated. Quiet shutdown skips the
+    // close_notify write: if the peer has already gone, writing it would raise
+    // SIGPIPE/EPIPE and kill the process for no benefit during teardown.
+    if (ssl_) {
+        SSL_set_quiet_shutdown(ssl_, 1);
+        SSL_shutdown(ssl_);
+        SSL_free(ssl_);
+        ssl_ = nullptr;
+    }
+    if (ctx_) {
+        SSL_CTX_free(ctx_);
+        ctx_ = nullptr;
+    }
+
     if (!connected_) {
+        if (socket_ != INVALID_SOCK) {
+#ifdef _WIN32
+            closesocket(socket_);
+#else
+            ::close(socket_);
+#endif
+            socket_ = INVALID_SOCK;
+        }
         return;
     }
 
