@@ -1136,6 +1136,30 @@ Cases: trusted-CA + matching name → handshake + encrypted round-trip; untruste
 POSIX-only (like the integration suites); the cross-platform URI-level parsing is in
 `HotRodURITest.cpp`. Full unit suite green (260 tests), stable across repeated runs.
 
+**Integration test (Docker):** `tests/integration/TlsIntegrationTest.cpp` +
+`scripts/start_infinispan_tls.sh` + `test-configs/infinispan-tls.xml` run the full
+parse→connect→PUT/GET chain over `hotrods://` against a real TLS-enabled Infinispan
+(Hot Rod endpoint with a PKCS12 server identity, no SASL). Server cert
+`test-configs/tls/server.p12` (alias `server`, SAN DNS:localhost / IP:127.0.0.1,
+password `password`); client trusts `test-configs/tls/ca.pem`. Cases: programmatic
+`setTls` round-trip, `hotrods://?trust_store_file_name=` round-trip, untrusted
+anchor (empty CA → system store) rejected, host-name mismatch rejected / accepted
+with validation off. Label `integration;docker;tls`, `TIMEOUT 300`. Two gotchas hit
+while wiring it: the mounted keystore must be world-readable (the in-container user
+can't read a 0600 `:ro` mount → `FileNotFoundException: … (Permission denied)`), and
+`keystore-password` is deprecated in favor of `password` on the `<keystore>` element.
+
+**SIGPIPE on a dropped TLS connection (library robustness).** The first integration
+run was killed by SIGPIPE (exit 141): a client-side write onto a closed TLS peer
+raises SIGPIPE, whose default disposition terminates the process. `close()`'s quiet
+shutdown prevents the *teardown* write, but the data path can still trip it. Both
+test mains (unit + integration) install `std::signal(SIGPIPE, SIG_IGN)` — the
+conventional stance that the application owns signal disposition. **Open follow-up:**
+decide whether the client library itself should be SIGPIPE-safe by default
+(e.g. `MSG_NOSIGNAL` on the plain send path; a custom BIO or documented app-level
+`SIG_IGN` for the OpenSSL path) rather than relying on the app. Not fixed in this
+slice.
+
 **Deferred (unchanged, issue #10):** mutual TLS / client cert+key, Java keystore
 formats, cipher/protocol/provider tuning, `connect_timeout`/`socket_timeout`,
 non-SCRAM SASL, `protocol_version=AUTO`/3.x.

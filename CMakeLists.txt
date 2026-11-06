@@ -338,6 +338,18 @@ if(GTest_FOUND)
             # Note: NOT gtest_main - we provide our own main()
     )
 
+    # Server-authenticated TLS integration tests (TLS-enabled single server, #18)
+    add_executable(tls_integration_tests
+        tests/integration/TlsIntegrationTest.cpp
+    )
+
+    target_link_libraries(tls_integration_tests
+        PRIVATE
+            hotrod-client
+            GTest::gtest
+            # Note: NOT gtest_main - we provide our own main()
+    )
+
     # SASL/SCRAM authentication integration tests (auth-enabled single server)
     add_executable(auth_integration_tests
         tests/integration/AuthIntegrationTest.cpp
@@ -377,6 +389,7 @@ if(GTest_FOUND)
     add_test(NAME PingRetryIntegrationTests COMMAND pingretry_integration_tests)
     add_test(NAME MultiSeedIntegrationTests COMMAND multiseed_integration_tests)
     add_test(NAME AuthIntegrationTests COMMAND auth_integration_tests)
+    add_test(NAME TlsIntegrationTests COMMAND tls_integration_tests)
 
     # Set working directory so scripts can be found
     set_tests_properties(PingIntegrationTests PROPERTIES
@@ -459,6 +472,10 @@ if(GTest_FOUND)
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         LABELS "integration;docker;auth"
     )
+    set_tests_properties(TlsIntegrationTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        LABELS "integration;docker;tls"
+    )
 
     # Fail fast if a suite hangs (e.g. a server/CLI-version regression stalls a
     # subprocess) instead of letting one stuck test burn the whole CI job budget.
@@ -470,7 +487,7 @@ if(GTest_FOUND)
         TopologyIntegrationTests
         ConcurrentClientsTests HashAwareRoutingIntegrationTests ConcurrentMultiServerTests
         RetryViewIntegrationTests PingRetryIntegrationTests MultiSeedIntegrationTests
-        AuthIntegrationTests
+        AuthIntegrationTests TlsIntegrationTests
         PROPERTIES TIMEOUT 300
     )
     endif()  # NOT WIN32 (integration tests)

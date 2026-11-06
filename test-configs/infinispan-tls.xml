@@ -1,0 +1,65 @@
+<infinispan xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="urn:infinispan:config:16.0 https://infinispan.org/schemas/infinispan-config-16.0.xsd
+                          urn:infinispan:server:16.0 https://infinispan.org/schemas/infinispan-server-16.0.xsd"
+      xmlns="urn:infinispan:config:16.0"
+      xmlns:server="urn:infinispan:server:16.0">
+
+   <cache-container name="default" statistics="true">
+      <!-- TLS transport only; no authentication (server-auth TLS slice, issue #18).
+           No cache-container <authorization> (RBAC), so any client may use caches. -->
+
+      <transport cluster="${infinispan.cluster.name:cluster}" stack="${infinispan.cluster.stack:tcp}"/>
+
+      <distributed-cache-configuration name="org.infinispan.DIST_SYNC" mode="SYNC">
+         <encoding media-type="application/octet-stream"/>
+      </distributed-cache-configuration>
+
+      <!-- Pre-defined cache the TLS integration test targets. -->
+      <distributed-cache name="tlscache" mode="SYNC">
+         <encoding media-type="application/octet-stream"/>
+      </distributed-cache>
+   </cache-container>
+
+   <server xmlns="urn:infinispan:server:16.0">
+      <interfaces>
+         <interface name="public">
+            <inet-address value="${infinispan.bind.address:0.0.0.0}"/>
+         </interface>
+      </interfaces>
+
+      <socket-bindings default-interface="public" port-offset="${infinispan.socket.binding.port-offset:0}">
+         <socket-binding name="default" port="${infinispan.bind.port:11222}"/>
+      </socket-bindings>
+
+      <security>
+         <security-realms>
+            <!-- Realm that provides only a TLS server identity (no authentication
+                 mechanisms): the endpoint below encrypts but does not require SASL,
+                 exercising server-authenticated TLS in isolation. The PKCS12
+                 keystore (alias "server", SAN DNS:localhost / IP:127.0.0.1) is
+                 mounted into the conf dir by start_infinispan_tls.sh. -->
+            <security-realm name="tls">
+               <server-identities>
+                  <ssl>
+                     <keystore path="server.p12"
+                               relative-to="infinispan.server.config.path"
+                               password="password"
+                               alias="server"
+                               type="PKCS12"/>
+                  </ssl>
+               </server-identities>
+            </security-realm>
+         </security-realms>
+      </security>
+
+      <endpoints>
+         <endpoint socket-binding="default" security-realm="tls">
+            <!-- No <authentication>: TLS encryption without SASL. -->
+            <hotrod-connector/>
+            <!-- Single-port endpoint requires a REST route even though these
+                 tests only exercise Hot Rod over TLS. -->
+            <rest-connector/>
+         </endpoint>
+      </endpoints>
+   </server>
+</infinispan>
