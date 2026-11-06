@@ -50,9 +50,11 @@ public:
      * Because RemoteCache is non-movable (it owns a mutex), this returns a
      * unique_ptr rather than a value.
      *
-     * v1 scope (see HotRodURI / issue #10 for what is deferred): only the
-     * hotrod:// scheme; the first host is used as the seed (topology discovery
-     * finds the rest); credentials enable SCRAM; the client_intelligence,
+     * Scope (see HotRodURI / issue #10 for what is still deferred): only the
+     * hotrod:// scheme; ALL comma-separated hosts become seed servers with
+     * startup and runtime failover across them (issue #12) — connect() tries each
+     * in order, and ops fall back to the seed list when the learned topology is
+     * empty or exhausted; credentials enable SCRAM; the client_intelligence,
      * protocol_version, and sasl_mechanism query parameters are honoured, any
      * other parameter (or hotrods:// / TLS) throws.
      *
@@ -493,6 +495,12 @@ private:
 
     std::string host_;
     uint16_t port_;
+    // Configured seed servers, in URI/constructor order (issue #12). Always holds
+    // at least one entry. Startup failover (connect()) and runtime failover
+    // (tryConnectSeeds) try these in order; mirrors the Java client's immutable
+    // ClusterInfo.getInitialServers() — the configured list is never discarded and
+    // is the permanent fallback when the learned topology is exhausted.
+    std::vector<ServerAddress> seeds_;
     std::string cacheName_;
     // shared_ptr (not unique_ptr) so a connection handed to an in-flight
     // operation stays alive even if a concurrent topology update evicts it from
@@ -502,6 +510,11 @@ private:
     uint8_t protocolVersion_;  // Protocol version (default: VERSION_41)
     ClientIntelligence clientIntelligence_;  // Client intelligence level
     bool proxyToNonOwner_ = true;  // Owner->non-owner fallback in routing (D5)
+    // Lifecycle: true only between a successful connect() and disconnect(). Guards
+    // runtime seed (re)connection (tryConnectSeeds) so an op before connect() or
+    // after disconnect() still fails as before instead of silently re-establishing
+    // a connection via a seed. Guarded by stateMutex_ (issue #12).
+    bool active_ = false;
     Authentication auth_;  // SASL auth config (disabled by default); applied at connect()
 
     // stateMutex_ guards the routing/pool state below (topology_, consistentHash_,
@@ -588,6 +601,31 @@ private:
      * @return MultiplexedConnection to the server (never null)
      */
     std::shared_ptr<MultiplexedConnection> getConnectionForServer(const ServerInfo& server);
+
+    /**
+     * Build a (not-yet-connected) MultiplexedConnection to a seed address, wired
+     * with this cache's topology-update callback. Used by the constructors and by
+     * connect()'s startup-failover loop.
+     */
+    std::shared_ptr<MultiplexedConnection> makeSeedConnection(const ServerAddress& addr);
+
+    /**
+     * Runtime seed failover (issue #12). Try the configured seed servers in order
+     * (minus @p exclude and anything already in @p tried), returning the first
+     * reachable connection, or nullptr if none is reachable.
+     *
+     * Fast path: reuses the live bootstrap connection_ when its own target isn't
+     * excluded/tried, so the happy path (topology empty / BASIC mode) costs no new
+     * I/O. When a *different* seed is reached, it is adopted as the new bootstrap
+     * connection_ (and host_/port_ follow) so the next op's fast path reuses it
+     * instead of re-probing the dead one.
+     *
+     * Caller must hold stateMutex_ (invoked from the selection methods); this
+     * method does not lock. @p tried accumulates every seed this call attempts.
+     */
+    std::shared_ptr<MultiplexedConnection> tryConnectSeeds(
+        const std::vector<ServerAddress>& exclude,
+        std::vector<ServerAddress>& tried);
 
     /**
      * Clean up connections to servers no longer in topology.
