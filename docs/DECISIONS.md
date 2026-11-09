@@ -1244,3 +1244,30 @@ deprecated symbol, which is what the 4.0 build needs.)
 fallback entirely (RFC 9525 — SAN-only matching). Our test certs/validation
 already rely on SANs, so no action needed now, but keep it in mind if a future
 runner moves to 4.1.
+
+## 2026-11-09 — TLS test certs: committed fixtures + a generator to reproduce them
+
+**What:** The TLS suites use certificate fixtures that were hand-made with
+`openssl` and committed as opaque blobs in the #18 commits (`f28a911` added the
+unit set `tests/fixtures/tls/{ca,otherca,server}.pem` + `server.key`; `7d39cfa`
+added the integration set `test-configs/tls/{ca.pem,server.p12}`). There was **no
+script** to regenerate them — the "how" lived only in prose. Added
+`scripts/gen-test-certs.sh` which reproduces both sets.
+
+**Why it matters:** The fixtures carry ~100-year validity so they never expire and
+normally need no touching, but any change (a new SAN, different key type, mutual-TLS
+client certs for #10, rotation) previously meant reverse-engineering the chain. The
+generator documents it as runnable code: self-signed roots via stock `req -x509`
+(critical `CA:TRUE` + SKI/AKI), leaves carrying only the SAN, RSA-2048/SHA-256.
+Unit set: `CN=Test Root CA` + leaf `CN=test.local` SAN `DNS:test.local`, plus an
+unrelated `CN=Other Root CA` for the untrusted-anchor test. Integration set:
+`CN=Integration Test CA` + `CN=localhost` leaf (SAN `DNS:localhost,IP:127.0.0.1`)
+exported to `server.p12` (alias `server`, password `password`).
+
+**Note:** Output is NOT byte-identical to the committed files (fresh random
+keys/serials/timestamps) — the committed set is left as-is; the script is only run
+when the fixtures must actually change, and the regenerated files must then be
+`git add`ed deliberately. CA private keys are not written to the tree (not part of
+the committed fixtures); each run regenerates the whole chain together. Output dirs
+overridable via `UNIT_DIR`/`INT_DIR` env vars (used to self-test without clobbering
+the committed set).
