@@ -27,7 +27,8 @@ done
 CONF=/opt/infinispan/server/conf
 
 # Start container with the auth config + property files mounted into the conf dir.
-CONTAINER_ID=$(docker run -d \
+# --pull always: :latest is unpinned; refresh so a stale local cache can't run an old server.
+CONTAINER_ID=$(docker run -d --pull always \
     -p 0:11222 \
     -v "$CONFIG_FILE:$CONF/infinispan.xml:ro" \
     -v "$USERS_FILE:$CONF/test-users.properties:ro" \
