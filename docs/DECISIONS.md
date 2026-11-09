@@ -1219,3 +1219,28 @@ dir by `file(COPY …)` at **configure** time (`CMakeLists.txt`), and integratio
 tests run from `${CMAKE_BINARY_DIR}` using those copies. After editing a script
 or compose file, re-run `cmake -S . -B build` (a *reconfigure*, not `cmake
 --build`) or the test keeps executing the stale build copy.
+
+## 2026-11-09 — TLS host validation uses X509_VERIFY_PARAM (SSL_set1_host deprecated in OpenSSL 4.0)
+
+**What:** The Fedora CI job failed to build `src/transport/Connection.cpp`:
+`SSL_set1_host` is deprecated as of OpenSSL 4.0 and the build uses
+`-Werror=deprecated-declarations`. Ubuntu and Windows (older OpenSSL) built fine,
+so this was CI-only on Fedora's bleeding-edge OpenSSL. Fix: drop the deprecated
+`SSL_set_hostflags` / `SSL_set1_host` convenience wrappers in `startTls()` and
+configure the SSL's verification params directly:
+`X509_VERIFY_PARAM_set_hostflags(SSL_get0_param(ssl), …)` and
+`X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), host, 0)`.
+
+**Why it matters:** The `SSL_set1_host` family are thin aliases over the
+`X509_VERIFY_PARAM_*` functions, so behaviour is byte-for-byte identical on every
+OpenSSL version, and the param API exists since OpenSSL 1.1.0 — the change builds
+clean on 1.1.0 through 4.0 with `-Werror=deprecated-declarations`. Verified
+locally against OpenSSL 3.5.9 (compiles) and confirmed the replacement against the
+OpenSSL 4.0 docs. (Cannot reproduce the 4.0 deprecation locally — local Fedora
+ships 3.5.9 where the symbol is not yet deprecated — but the fix references no
+deprecated symbol, which is what the 4.0 build needs.)
+
+**Watch out (not yet an issue):** OpenSSL 4.1 additionally drops the common-name
+fallback entirely (RFC 9525 — SAN-only matching). Our test certs/validation
+already rely on SANs, so no action needed now, but keep it in mind if a future
+runner moves to 4.1.

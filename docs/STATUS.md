@@ -4,7 +4,7 @@
 > If any other doc disagrees with this file, this file wins. Point-in-time
 > snapshots live in [`archive/`](archive/) and are historical only.
 >
-> **Last updated:** 2026-11-06
+> **Last updated:** 2026-11-09
 
 ---
 
@@ -103,7 +103,8 @@ Rod URI `fromUri` (#9), multi-server seed list + failover (#12)._
   (`ca_file`, empty = system store), SNI (`sni_host`, skipped for literal IPs),
   and host-name validation (`hostname_validation`, default on; chain verification
   always on). Min TLS 1.2. `include/hotrod/TlsConfig.h`; handshake in
-  `src/transport/Connection.cpp`. Unit-tested against an in-process OpenSSL
+  `src/transport/Connection.cpp` (host-name validation via the `X509_VERIFY_PARAM`
+  API, so it builds clean on OpenSSL 1.1.0 through 4.0). Unit-tested against an in-process OpenSSL
   server and end-to-end against a TLS-enabled Infinispan
   (`tests/integration/TlsIntegrationTest.cpp`, Docker). A dropped connection is
   SIGPIPE-safe per-connection (MSG_NOSIGNAL / SO_NOSIGPIPE / custom TLS BIO) — no

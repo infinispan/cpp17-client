@@ -6,6 +6,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
+#include <openssl/x509_vfy.h>
 
 // Platform-specific includes
 #ifdef _WIN32
@@ -333,8 +334,14 @@ void Connection::startTls() {
     // of chain verification; omitting it leaves only chain verification on. We do
     // not validate a literal IP as a DNS name.
     if (tls_.hostname_validation && !nameIsIp) {
-        SSL_set_hostflags(ssl_, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-        if (SSL_set1_host(ssl_, serverName.c_str()) != 1) {
+        // Configure host-name validation on the SSL's X509_VERIFY_PARAM directly.
+        // SSL_set_hostflags / SSL_set1_host are thin convenience wrappers for these
+        // and are deprecated as of OpenSSL 4.0 (Fedora CI builds with
+        // -Werror=deprecated-declarations). The param API is behaviourally
+        // identical and available since OpenSSL 1.1.0.
+        X509_VERIFY_PARAM* vparam = SSL_get0_param(ssl_);
+        X509_VERIFY_PARAM_set_hostflags(vparam, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+        if (X509_VERIFY_PARAM_set1_host(vparam, serverName.c_str(), 0) != 1) {
             throw std::runtime_error("TLS: failed to set validation host name: " +
                                      opensslErrors());
         }
