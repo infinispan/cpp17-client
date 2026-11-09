@@ -11,8 +11,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-# Start container with custom XML mounted (anonymous mode)
-CONTAINER_ID=$(docker run -d \
+# Start container with custom XML mounted (anonymous mode).
+# --pull always: :latest is unpinned; refresh so a stale local cache can't run an old server.
+CONTAINER_ID=$(docker run -d --pull always \
     -p 0:11222 \
     -v "$CONFIG_FILE:/opt/infinispan/server/conf/infinispan.xml:ro" \
     quay.io/infinispan/server:latest)

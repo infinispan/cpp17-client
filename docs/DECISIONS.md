@@ -1183,3 +1183,39 @@ at all.
 **Deferred (unchanged, issue #10):** mutual TLS / client cert+key, Java keystore
 formats, cipher/protocol/provider tuning, `connect_timeout`/`socket_timeout`,
 non-SCRAM SASL, `protocol_version=AUTO`/3.x.
+
+## 2026-11-09 — Integration tests force `--pull always` (stale `:latest` cache, not an API change)
+
+**What:** The integration suites bring up `quay.io/infinispan/server:latest`. Every
+cluster-dependent suite (Topology, HashAwareRouting, ConcurrentMultiServer,
+RetryView, PingRetry, MultiSeed) suddenly failed — first `"Failed to start
+cluster"`, and once the cluster did start, `"Resource not found"` from the REST
+helpers (`getServerClusterSize`, `getPrimaryOwnerForKey`, `RestAPIHelper`). The
+fix: pin the *pull behavior*, not the API — `pull_policy: always` on all four
+nodes in `test-configs/docker-compose-cluster.yml`, and `docker run -d --pull
+always` in `scripts/start_infinispan_{noauth,auth,tls}.sh`.
+
+**Why it matters / how it was found:** The tests query the server over the REST
+`v3` API (`/rest/v3/cluster/_distribution`, `/rest/v3/caches/{c}/...`). That API
+is correct for current server builds. The failures were **environmental**: Docker
+only pulls `:latest` when the tag is absent locally, so an 8-month-old cached
+`:latest` (Feb 2026, id `43285deb7485`) — which predates `rest/v3` and 404s on it
+— kept being reused, even though newer tags (`16.3`, id `fa22dddecda4`,
+2026-10-20) were present under other names. The REST probes counted 0 members /
+returned 404, so clusters "never formed" and owner lookups came back empty.
+Confirmed by probing both images directly: cached `:latest` → `rest/v3` 404;
+`16.3` → `rest/v3` 200. A manual `docker pull …:latest` (now resolves to the 16.3
+build) turned the suite green; the pull-policy change makes that automatic so a
+stale local cache can never again silently run an old server. CI (no cache) was
+unaffected, which is why this only bit local runs.
+
+**Dead end (not shipped):** first mis-diagnosed as an API removal and rewrote the
+test helpers + cluster scripts from `rest/v3` to `rest/v2 ?action=`. Reverted in
+full once the 16.3 probe showed `rest/v3` still present — the API was never the
+problem. Test code stays on `rest/v3`.
+
+**Gotcha for next time:** `scripts/` and `test-configs/` are copied into the build
+dir by `file(COPY …)` at **configure** time (`CMakeLists.txt`), and integration
+tests run from `${CMAKE_BINARY_DIR}` using those copies. After editing a script
+or compose file, re-run `cmake -S . -B build` (a *reconfigure*, not `cmake
+--build`) or the test keeps executing the stale build copy.
