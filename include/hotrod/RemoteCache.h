@@ -349,20 +349,23 @@ public:
     }
 
     /**
-     * Configure SASL authentication. Must be called before connect().
+     * Configure username/password SASL authentication. Must be called before
+     * connect().
      *
      * Enables the SASL handshake on every connection the client opens (the seed
-     * connection and every topology-discovered cluster member). Only the SCRAM
-     * family is supported — SCRAM-SHA-1 / SCRAM-SHA-256 / SCRAM-SHA-512 — any
-     * other mechanism throws a HotRodClientException at connect() time.
+     * connection and every topology-discovered cluster member). Supported
+     * mechanisms: the SCRAM family (SCRAM-SHA-1 / -256 / -512) and PLAIN — all of
+     * which use username + password. For EXTERNAL (mutual-TLS client cert) or
+     * OAUTHBEARER (bearer token), build an Authentication and use the overload
+     * below. Any other mechanism throws a HotRodClientException at connect() time.
      *
-     * For SCRAM only username/password enter the exchange; realm and serverName
-     * are accepted for parity with the Java client but are unused by SCRAM.
+     * realm and serverName are accepted for parity with the Java client but are
+     * not used on the wire by the supported mechanisms.
      *
      * @param username   SASL authentication username
      * @param password   SASL authentication password
-     * @param realm      Security realm (default "default"; unused by SCRAM)
-     * @param serverName SASL server name (default "infinispan"; unused by SCRAM)
+     * @param realm      Security realm (default "default"; unused on the wire)
+     * @param serverName SASL server name (default "infinispan"; unused on the wire)
      * @param mechanism  SASL mechanism (default "SCRAM-SHA-256")
      */
     void setAuthentication(const std::string& username,
@@ -376,6 +379,17 @@ public:
         auth_.realm = realm;
         auth_.serverName = serverName;
         auth_.mechanism = mechanism;
+    }
+
+    /**
+     * Configure SASL authentication from a prebuilt Authentication. Must be called
+     * before connect(). Use this for mechanisms the convenience overload above does
+     * not cover — notably OAUTHBEARER (set `token`) and EXTERNAL (identity from the
+     * mutual-TLS client certificate). Sets `enabled = true`.
+     */
+    void setAuthentication(const Authentication& auth) {
+        auth_ = auth;
+        auth_.enabled = true;
     }
 
     /**

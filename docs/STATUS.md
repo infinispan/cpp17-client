@@ -41,7 +41,8 @@ _The 1–3 concrete things to do next. Keep this short and current._
    (two `TODO`s in `src/operations/RemoteCache.cpp`).
 
 _Recently shipped (detail in "Working and shipped" + [`DECISIONS.md`](DECISIONS.md)):
-mutual TLS (PEM client cert/key) + PEM-honest TLS URI keys (`ca_file`,
+non-SCRAM SASL (PLAIN/EXTERNAL/OAUTHBEARER) (#10, 2026-11-12), mutual TLS (PEM
+client cert/key) + PEM-honest TLS URI keys (`ca_file`,
 `client_cert_file`/`client_key_file`; Java keystore keys now rejected with a
 redirect) (#18, 2026-11-12), server-authenticated TLS for `hotrods://` (#18,
 2026-11-06), multi-server seed list + failover (#12), Hot Rod URI `fromUri` (#9),
@@ -66,16 +67,20 @@ pull from here next. Step numbers follow
   Docker `TlsIntegrationTest`, which needs the Infinispan server configured to
   require/verify client certs (extend `scripts/start_infinispan_tls.sh` +
   `gen-test-certs.sh` already emits the unit client cert).
+- [ ] **Non-SCRAM SASL integration coverage** — PLAIN/EXTERNAL/OAUTHBEARER are
+  unit-tested against fake servers but not end-to-end: PLAIN needs a server SASL
+  realm offering it; EXTERNAL needs mutual TLS + a cert→identity mapping;
+  OAUTHBEARER needs a token issuer/realm. `AuthIntegrationTest` covers SCRAM only.
 - [ ] **Benchmark the multiplexing path** — the async rewrite targets 5–10×
   concurrent throughput; unmeasured so far.
 - [ ] **Code cleanup:** read header "other params" when `paramCount > 0`
   (`src/operations/RemoteCache.cpp:140,182`).
 - [ ] **Hot Rod URI — deferred features (issue #10):** `connect_timeout`/
-  `socket_timeout`, non-SCRAM SASL (PLAIN/OAUTHBEARER `token`, EXTERNAL — now
-  unblocked by mutual TLS), `protocol_version=AUTO`/3.x. Each drops its
-  "unsupported" throw from `HotRodURI::parse` once the capability lands.
-  (Multi-server seed list — #12 — and TLS incl. mutual TLS — #18 — are already
-  shipped; see "Working and shipped".)
+  `socket_timeout`, `protocol_version=AUTO`/3.x, and GSSAPI/GS2-KRB5 SASL (needs a
+  Kerberos lib). Each drops its "unsupported" throw from `HotRodURI::parse` once
+  the capability lands. (Multi-server seed list — #12 — TLS incl. mutual TLS — #18 —
+  and non-SCRAM SASL PLAIN/EXTERNAL/OAUTHBEARER are already shipped; see "Working
+  and shipped".)
 - [ ] **TLS keystore formats + tuning (deferred part of #18/#10):** Java keystore
   formats (JKS/PKCS12, `*_store_file_name`/`*_store_type`/password/`key_alias`) —
   this client is PEM-only, so these URI keys are rejected with a redirect to the
@@ -138,11 +143,15 @@ Rod URI `fromUri` (#9), multi-server seed list + failover (#12)._
   Excluding every known server still throws (no seed rescue of an excluded node)
 - Wire primitives (vInt, vLong, strings, byte arrays)
 - Protocol 4.0 headers (all conditional fields)
-- **SASL/SCRAM authentication (end-to-end)** — `setAuthentication(...)` runs the
-  AUTH_MECH_LIST + two-turn SCRAM handshake on every connection (seed +
-  topology-discovered), for the whole family (`SCRAM-SHA-1/256/512`, RFC 5802,
-  OpenSSL); non-SCRAM mechanisms throw at connect(). See
-  `documentation/topics/security.adoc`
+- **SASL authentication (end-to-end)** — `setAuthentication(...)` runs the
+  AUTH_MECH_LIST + AUTH handshake on every connection (seed + topology-discovered).
+  Mechanisms: SCRAM family (`SCRAM-SHA-1/256/512`, RFC 5802, two-turn), **PLAIN**
+  (RFC 4616), **EXTERNAL** (RFC 4422 — identity from the mutual-TLS client cert),
+  **OAUTHBEARER** (RFC 7628 — bearer `token`); single-message mechanisms share a
+  generalized path, pure initial-response builders in `include/hotrod/SaslMechanisms.h`.
+  URI selects via `sasl_mechanism` (+ `token`); the `Authentication` overload of
+  `setAuthentication` covers token/cert mechanisms. GSSAPI/DIGEST-MD5 throw at
+  connect(). All OpenSSL, no JDK SASL provider. See `documentation/topics/security.adoc`
 - Cluster topology awareness (failover, load balancing)
 - Consistent hashing (MurmurHash3 x64_32, seed 9001)
 - Hash-aware routing → primary owner, with automatic failover
@@ -189,15 +198,17 @@ Rod URI `fromUri` (#9), multi-server seed list + failover (#12)._
   that stalls a subprocess fails fast instead of hanging the whole CI job. See
   [`DECISIONS.md`](DECISIONS.md).
 
-**Test status:** **266 unit** (verified 2026-11-12) + **96 integration** (20
+**Test status:** **284 unit** (verified 2026-11-12) + **96 integration** (20
 suites, verified 2026-10-19), all passing. This is the one authoritative count —
 other docs describe *what* is covered rather than repeating totals. Counts read
 from the built test binaries via `--gtest_list_tests`, so they match what actually
-runs. (The +16 unit tests since 2026-11-09 are the mutual-TLS handshake cases and
-the PEM-honest URI-key parsing/redirect cases.)
+runs. (The +34 unit tests since 2026-11-09 are the mutual-TLS handshake cases, the
+PEM-honest URI-key parsing/redirect cases, and the non-SCRAM SASL mechanism cases
+— pure initial-response builders + PLAIN/EXTERNAL/OAUTHBEARER driver flows.)
 - Unit (`./build/unit_tests`, <1s) — wire primitives/headers, consistent hashing,
-  server-selection/retry helpers, the SASL/SCRAM handshake, the TLS handshake
-  (server-auth + mutual TLS, in-process OpenSSL server), and the Hot Rod URI parser.
+  server-selection/retry helpers, the SASL handshake (SCRAM family +
+  PLAIN/EXTERNAL/OAUTHBEARER, against fake servers), the TLS handshake (server-auth
+  + mutual TLS, in-process OpenSSL server), and the Hot Rod URI parser.
 - Integration (`ctest`, spins up Docker Infinispan single-server + multi-node
   clusters; also green on Linux CI) — CRUD + metadata/CAS, topology & hash-aware
   routing, keyed/keyless retry (`RetryView`/ping), SASL/SCRAM against a secured

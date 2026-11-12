@@ -1318,3 +1318,48 @@ is now unblocked by this change but not yet implemented.
 **Keys still rejected (not keystore-related):** `use_ssl`, `ssl_protocol`,
 `ssl_ciphers`, `ssl_named_groups`, `ssl_provider`, `ssl_context` — protocol/cipher
 tuning deferred (issue #10).
+
+## 2026-11-12 — Non-SCRAM SASL: PLAIN, EXTERNAL, OAUTHBEARER
+
+**What:** The SASL driver (`SaslAuthenticator`) now supports three single-message
+mechanisms beyond the SCRAM family: **PLAIN** (RFC 4616), **EXTERNAL** (RFC 4422),
+and **OAUTHBEARER** (RFC 7628). GSSAPI/GS2-KRB5 (Kerberos) and DIGEST-MD5 remain
+unsupported and throw at connect().
+
+- `Authentication` gains a `token` field (OAUTHBEARER bearer token). A new
+  `RemoteCache::setAuthentication(const Authentication&)` overload configures
+  mechanisms the username/password convenience setter can't (OAUTHBEARER token,
+  EXTERNAL cert identity).
+- `HotRodURI` now parses `token` (previously an unknown-key error) and keeps
+  `sasl_mechanism`; `fromUri` enables auth on *any* auth signal (mechanism, creds,
+  or token) rather than requiring a username — EXTERNAL/OAUTHBEARER have none.
+- Pure, unit-testable initial-response builders live in
+  `include/hotrod/SaslMechanisms.h` (header-only, like `AuthCodec.h`).
+
+**Why it matters:** The wire layer (`AuthCodec`, `SaslTransport`) was already
+mechanism-agnostic — it carries a mechanism name + opaque token bytes — so only the
+driver was SCRAM-specific. Generalizing it (classify mechanism → SCRAM multi-turn
+vs single-message path) kept the well-tested SCRAM flow untouched while adding the
+common non-Kerberos mechanisms cheaply. EXTERNAL was unblocked by mutual TLS
+(same-day #18 work): the client identity is the TLS client certificate.
+
+**Design notes / gotchas:**
+- **PLAIN** builds `authzid NUL authcid NUL passwd` as raw bytes (NULs), never a C
+  string; authzid empty = authorize as the authcid. Must be used over TLS (password
+  is effectively cleartext). Requires a username (throws otherwise, BeforeSend).
+- **EXTERNAL** sends the authorization id (usually empty — identity from the cert).
+  Needs no credentials; pointless without a mutual-TLS client cert.
+- **OAUTHBEARER** sends `n,[a=authzid],^Aauth=Bearer <token>^A^A` (^A = 0x01).
+  Requires a token (throws otherwise). On failure the server returns a non-completed
+  error challenge and expects a lone `0x01` continuation before failing the exchange
+  with an ERROR frame (RFC 7628) — the driver handles that extra turn.
+- Mechanism names are matched case-sensitively against the server's offered list
+  (as on the wire): use the canonical upper-case names.
+
+**Coverage:** unit only — pure builders + driver flows against fake servers
+(success, bad credentials, missing username/token, mechanism-not-offered,
+OAUTHBEARER failure continuation). End-to-end integration against a real server is
+deferred (needs server realms/token issuer; see STATUS backlog), as with mutual TLS.
+
+**Deferred:** GSSAPI/GS2-KRB5 (needs MIT krb5/Heimdal + multi-round GSS exchange),
+DIGEST-MD5 (obsolete). SASL QOP/`sasl_properties.*` not wired.

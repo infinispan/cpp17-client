@@ -4,6 +4,7 @@
 #include "hotrod/HotRodClientException.h"
 #include "hotrod/AuthCodec.h"
 #include "hotrod/SCRAM.h"
+#include "hotrod/SaslMechanisms.h"
 #include "hotrod/TopologyInfo.h"
 #include <utility>
 
@@ -127,15 +128,25 @@ SaslAuthenticator::SaslAuthenticator(Authentication auth, std::string host, uint
 
 void SaslAuthenticator::authenticate(SaslTransport& transport) {
     const std::vector<ServerAddress> node{{host_, port_}};
+    const std::string& mech = auth_.mechanism;
 
-    // 1. Only SCRAM-SHA-1/256/512 are supported this session.
-    SCRAM::Digest digest;
+    // 1. Classify the mechanism up-front (before any I/O). SCRAM is a multi-turn
+    //    exchange; PLAIN/EXTERNAL/OAUTHBEARER complete in a single client message.
+    SCRAM::Digest digest{};
+    bool isScram = false;
     try {
-        digest = SCRAM::digestForMechanism(auth_.mechanism);
+        digest = SCRAM::digestForMechanism(mech);
+        isScram = true;
     } catch (const std::exception&) {
+        isScram = false;
+    }
+    const bool isSimple =
+        (mech == "PLAIN" || mech == "EXTERNAL" || mech == "OAUTHBEARER");
+    if (!isScram && !isSimple) {
         throw HotRodClientException(
-            "Unsupported SASL mechanism: " + auth_.mechanism +
-            " (supported: SCRAM-SHA-1, SCRAM-SHA-256, SCRAM-SHA-512)",
+            "Unsupported SASL mechanism: " + mech +
+            " (supported: SCRAM-SHA-1, SCRAM-SHA-256, SCRAM-SHA-512, PLAIN, "
+            "EXTERNAL, OAUTHBEARER)",
             FailurePhase::BeforeSend, std::nullopt, node);
     }
 
@@ -148,18 +159,65 @@ void SaslAuthenticator::authenticate(SaslTransport& transport) {
     VInt mechCount = transport.readVInt();
     bool offered = false;
     for (VInt i = 0; i < mechCount; ++i) {
-        if (transport.readString() == auth_.mechanism) {
+        if (transport.readString() == mech) {
             offered = true;
             // keep reading to drain the rest of the list off the wire
         }
     }
     if (!offered) {
         throw HotRodClientException(
-            "SASL mechanism " + auth_.mechanism + " is not offered by the server",
+            "SASL mechanism " + mech + " is not offered by the server",
             FailurePhase::AfterSend, std::nullopt, node);
     }
 
-    // 3. SCRAM client-first (initial response carried in the first AUTH request).
+    // 3a. Single-message mechanisms (PLAIN / EXTERNAL / OAUTHBEARER): one AUTH
+    //     request carrying the initial response; the server answers completed=true
+    //     on success, or an ERROR frame on failure (surfaced by readResponseHeader).
+    if (isSimple) {
+        ByteArray initial;
+        if (mech == "PLAIN") {
+            if (auth_.username.empty()) {
+                throw HotRodClientException("PLAIN authentication requires a username",
+                                            FailurePhase::BeforeSend, std::nullopt, node);
+            }
+            // Empty authzid: authorize as the authentication id (the usual case).
+            initial = saslPlainInitialResponse("", auth_.username, auth_.password);
+        } else if (mech == "EXTERNAL") {
+            // Identity comes from the mutual-TLS client cert; the authorization id
+            // (auth_.username, usually empty) is the only payload.
+            initial = saslExternalInitialResponse(auth_.username);
+        } else {  // OAUTHBEARER
+            if (auth_.token.empty()) {
+                throw HotRodClientException("OAUTHBEARER authentication requires a token",
+                                            FailurePhase::BeforeSend, std::nullopt, node);
+            }
+            initial = saslOAuthBearerInitialResponse(auth_.username, auth_.token);
+        }
+
+        transport.sendRequest(Opcode::AUTH_REQUEST, encodeAuthRequestBody(mech, initial));
+        if (transport.readResponseHeader() != Opcode::AUTH_RESPONSE) {
+            throw HotRodClientException("Auth: expected AUTH_RESPONSE",
+                                        FailurePhase::AfterSend, std::nullopt, node);
+        }
+        const bool completed = transport.readByte() != 0;
+        (void)transport.readByteArray();  // drain the (empty on success) challenge
+        if (completed) {
+            return;  // authenticated
+        }
+
+        // Not completed. Only OAUTHBEARER defines a continuation (RFC 7628): on an
+        // error the server returns a result challenge and expects a lone kvsep
+        // (0x01) before it fails the exchange with an ERROR frame.
+        if (mech == "OAUTHBEARER") {
+            transport.sendRequest(Opcode::AUTH_REQUEST,
+                                  encodeAuthRequestBody(mech, ByteArray{0x01}));
+            (void)transport.readResponseHeader();  // expected to throw on the ERROR frame
+        }
+        throw HotRodClientException(mech + " authentication did not complete",
+                                    FailurePhase::ServerError, std::nullopt, node);
+    }
+
+    // 3b. SCRAM client-first (initial response carried in the first AUTH request).
     std::string nonce = SCRAM::generateNonce();
     std::string clientFirst = SCRAM::createClientFirstMessage(auth_.username, nonce);
     // client-first-message-bare = client-first without the "n,," GS2 header.

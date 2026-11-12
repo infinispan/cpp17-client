@@ -4,7 +4,7 @@ A cross-platform C++17 implementation of the Infinispan Hot Rod protocol client.
 
 🎉 **Smart client** - hash-aware routing, automatic failover, full CRUD +
 metadata ops, typed error handling and user-decided retry (keyed & keyless),
-and SASL/SCRAM authentication (SCRAM-SHA-1/256/512).
+and SASL authentication (SCRAM-SHA-1/256/512, PLAIN, EXTERNAL, OAUTHBEARER).
 
 ## Quick Start
 
@@ -193,9 +193,11 @@ coverage breakdown and counts.
   tried nodes) + `isTransient` / `outcomeUncertain` classification (Step 11a)
 - ✅ **User-decided retry** (`cache.excluding(e)` bound view) for keyed ops and
   keyless `ping`, with automatic before-send failover (Step 11b/11c)
-- ✅ **SASL/SCRAM authentication** (`setAuthentication(...)`) — end-to-end for the
-  SCRAM family (`SCRAM-SHA-1`/`SCRAM-SHA-256`/`SCRAM-SHA-512`), applied to every
-  connection; see [`documentation/topics/security.adoc`](documentation/topics/security.adoc)
+- ✅ **SASL authentication** (`setAuthentication(...)`) — end-to-end, applied to
+  every connection: SCRAM family (`SCRAM-SHA-1`/`-256`/`-512`), **PLAIN**,
+  **EXTERNAL** (identity from the mutual-TLS client cert), and **OAUTHBEARER**
+  (bearer `token`). GSSAPI/DIGEST-MD5 throw at connect(). See
+  [`documentation/topics/security.adoc`](documentation/topics/security.adoc)
 - ✅ **Hot Rod URI** (`RemoteCache::fromUri("hotrod[s]://...")`) — build a client from
   a connection string (hosts, credentials, `sasl_mechanism`/`client_intelligence`/
   `protocol_version` params, and the server-auth TLS params below); timeouts and more
@@ -261,8 +263,9 @@ cache->connect();
 // Supports hotrod:// and hotrods:// (TLS). All hosts become seed servers (issue
 // #12): connect() tries each in order, and ops fall back to the seed list when the
 // connected server dies or no topology is known (e.g. BASIC mode). Credentials
-// enable SCRAM, and sasl_mechanism/client_intelligence/protocol_version (Java
-// "4.0"/"4.1" form) are honoured. hotrods:// enables TLS (PEM material only); the
+// enable SCRAM by default; sasl_mechanism (SCRAM*/PLAIN/EXTERNAL/OAUTHBEARER, with
+// token for OAUTHBEARER) / client_intelligence / protocol_version (Java "4.0"/"4.1"
+// form) are honoured. hotrods:// enables TLS (PEM material only); the
 // ca_file (PEM CA) / sni_host_name / ssl_hostname_validation params and the mutual-
 // TLS client_cert_file / client_key_file / client_key_password params map to
 // setTls(...). The Java keystore keys (trust_store_file_name, key_store_*, …) are
@@ -296,7 +299,7 @@ cache->connect();
   user-decided retry (keyed + keyless)
 - ✅ **TLS, incl. mutual TLS** (shipped, issue #18): `hotrods://` + `setTls(...)`, PEM only
 - **Step 12 — Bulk operations** (next): `GET_ALL`, `PUT_ALL`, `BULK_GET`
-- Also: multiplexing benchmarks, non-SCRAM SASL + PKCS12/JKS keystores (issue #10)
+- Also: multiplexing benchmarks, GSSAPI SASL (Kerberos) + PKCS12/JKS keystores (issue #10)
 
 ## Project Structure
 
