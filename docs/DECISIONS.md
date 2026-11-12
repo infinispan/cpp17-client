@@ -1271,3 +1271,50 @@ when the fixtures must actually change, and the regenerated files must then be
 the committed fixtures); each run regenerates the whole chain together. Output dirs
 overridable via `UNIT_DIR`/`INT_DIR` env vars (used to self-test without clobbering
 the committed set).
+
+## 2026-11-12 — PEM-honest TLS URI keys + mutual TLS (client cert/key)
+
+**What:** Two linked changes to the TLS story.
+
+1. **Mutual TLS (client certificate).** `TlsConfig` gains `cert_file` / `key_file` /
+   `key_password` (all PEM). `Connection::startTls` now loads a client cert chain +
+   private key (`SSL_CTX_use_certificate_chain_file` +
+   `SSL_CTX_use_PrivateKey_file` + `SSL_CTX_check_private_key`) and supplies the key
+   passphrase via `SSL_CTX_set_default_passwd_cb` so an encrypted key never blocks on
+   a terminal prompt. cert and key must be set together (fail-fast otherwise).
+
+2. **PEM-honest URI keys + fail-fast on Java keystore keys.** The server-trust URI
+   key was renamed `trust_store_file_name` → **`ca_file`** (the name no longer
+   implies a JKS/PKCS12 container). New client-identity keys **`client_cert_file`**,
+   **`client_key_file`**, **`client_key_password`**. The Java keystore keys
+   (`trust_store_file_name`, `trust_store_type`, `trust_store_password`,
+   `key_store_file_name`, `key_store_type`, `key_store_password`, `key_alias`) are
+   now **rejected with a redirect message** pointing at the PEM equivalent, instead
+   of the old generic "not supported yet".
+
+**Why it matters:** This client uses PEM, not Java keystores (decided for the #18
+trust store). The shipped #18 key `trust_store_file_name` *accepted* a path but read
+it as PEM — so a ported Java URI (`trust_store_file_name=truststore.jks`) would have
+been silently misread. That was the one TLS URI footgun that failed silently rather
+than loudly. Renaming to `ca_file` and making every keystore key throw with the fix
+("use `ca_file=` / `client_cert_file=`+`client_key_file=` (PEM)") removes the
+ambiguity: a ported Java URI now fails fast with the exact correction.
+
+**Superseded:** the 2026-11-06 #18 decision that the URI carried
+`trust_store_file_name` as a PEM CA path — that key is now rejected; use `ca_file`.
+This is a deliberate backward-compat break, taken while #18 is still fresh.
+
+**Gotcha discovered (TLS 1.3 mutual-TLS failure surfaces late):** when the server
+requires a client cert and the client presents none, `SSL_connect()` *succeeds*
+under TLS 1.3 — the server's "certificate required" alert only arrives on the first
+I/O. (Under TLS 1.2 it fails at the handshake.) Production is unaffected because a
+PING/SASL exchange immediately follows connect(); the unit test asserts the failure
+across connect()+first-I/O rather than at connect() alone.
+
+**Deferred still:** PKCS12/JKS keystore formats (PEM only, by decision), non-SCRAM
+SASL, timeouts (issue #10). EXTERNAL SASL (which authenticates via the client cert)
+is now unblocked by this change but not yet implemented.
+
+**Keys still rejected (not keystore-related):** `use_ssl`, `ssl_protocol`,
+`ssl_ciphers`, `ssl_named_groups`, `ssl_provider`, `ssl_context` — protocol/cipher
+tuning deferred (issue #10).

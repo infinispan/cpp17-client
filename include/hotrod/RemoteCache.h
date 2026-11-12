@@ -389,9 +389,11 @@ public:
      * Configure TLS transport encryption. Must be called before connect().
      *
      * Enables TLS on every connection the client opens (the seed connection and
-     * every topology-discovered cluster member). This first slice is
-     * server-authenticated TLS with PEM trust material; mutual TLS is not yet
-     * supported (issue #10). See TlsConfig for field semantics.
+     * every topology-discovered cluster member). Certificate material is PEM
+     * (not Java JKS/PKCS12 keystores). This convenience overload configures
+     * server-authenticated TLS; for mutual TLS set cert_file/key_file on a
+     * TlsConfig and use the setTls(const TlsConfig&) overload. See TlsConfig for
+     * field semantics.
      *
      * @param ca_file             PEM CA file to verify the server; empty uses the
      *                            system/default trust store.

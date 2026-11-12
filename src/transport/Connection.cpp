@@ -53,6 +53,18 @@ std::string opensslErrors() {
     return out.empty() ? "unknown OpenSSL error" : out;
 }
 
+// OpenSSL private-key passphrase callback. `userdata` is a NUL-terminated
+// passphrase (the TlsConfig::key_password); copy it into `buf` (truncated to
+// `size`) so an encrypted client key never blocks on an interactive prompt.
+int tlsKeyPasswordCb(char* buf, int size, int /*rwflag*/, void* userdata) {
+    if (userdata == nullptr || size <= 0) return 0;
+    const char* pw = static_cast<const char*>(userdata);
+    int len = static_cast<int>(std::strlen(pw));
+    if (len > size) len = size;
+    std::memcpy(buf, pw, static_cast<size_t>(len));
+    return len;
+}
+
 // True when host is a literal IPv4 or IPv6 address. SNI (RFC 6066) carries host
 // names only, so for a literal IP we neither send SNI nor use it for the
 // certificate host-name match (which would be a DNS-name check).
@@ -309,6 +321,40 @@ void Connection::startTls() {
     // Always verify the server's certificate chain. The hostname match below is
     // separately controlled by tls_.hostname_validation.
     SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
+
+    // Client identity (mutual TLS): present a PEM certificate chain + private key
+    // when configured. cert_file and key_file must be set together — a cert
+    // without its key (or vice versa) cannot complete the handshake, so fail fast
+    // with a clear message rather than a late, opaque OpenSSL error.
+    if (!tls_.cert_file.empty() || !tls_.key_file.empty()) {
+        if (tls_.cert_file.empty() || tls_.key_file.empty()) {
+            throw std::runtime_error(
+                "TLS: mutual TLS requires both a client certificate (cert_file) and "
+                "its private key (key_file); only one was provided");
+        }
+        // Supply the key passphrase (if any) so an encrypted key never blocks on a
+        // terminal prompt. The userdata pointer is read synchronously inside
+        // SSL_CTX_use_PrivateKey_file below, while tls_ is alive.
+        if (!tls_.key_password.empty()) {
+            SSL_CTX_set_default_passwd_cb(ctx_, tlsKeyPasswordCb);
+            SSL_CTX_set_default_passwd_cb_userdata(
+                ctx_, const_cast<char*>(tls_.key_password.c_str()));
+        }
+        if (SSL_CTX_use_certificate_chain_file(ctx_, tls_.cert_file.c_str()) != 1) {
+            throw std::runtime_error("TLS: failed to load client certificate '" +
+                                     tls_.cert_file + "': " + opensslErrors());
+        }
+        if (SSL_CTX_use_PrivateKey_file(ctx_, tls_.key_file.c_str(),
+                                        SSL_FILETYPE_PEM) != 1) {
+            throw std::runtime_error("TLS: failed to load client private key '" +
+                                     tls_.key_file + "': " + opensslErrors());
+        }
+        if (SSL_CTX_check_private_key(ctx_) != 1) {
+            throw std::runtime_error(
+                "TLS: client certificate and private key do not match: " +
+                opensslErrors());
+        }
+    }
 
     ssl_ = SSL_new(ctx_);
     if (!ssl_) {

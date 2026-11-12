@@ -200,11 +200,14 @@ coverage breakdown and counts.
   a connection string (hosts, credentials, `sasl_mechanism`/`client_intelligence`/
   `protocol_version` params, and the server-auth TLS params below); timeouts and more
   in issue #10
-- ✅ **Server-authenticated TLS** (`setTls(...)` / `hotrods://`, issue #18) — wraps
-  every connection in a TLS session (OpenSSL). PEM trust (`ca_file`, empty = system
-  store), SNI, and host-name validation (default on); min TLS 1.2. URI keys:
-  `trust_store_file_name` (PEM CA), `sni_host_name`, `ssl_hostname_validation`.
-  Mutual TLS / keystore formats are deferred (issue #10)
+- ✅ **TLS, incl. mutual TLS** (`setTls(...)` / `hotrods://`, issue #18) — wraps
+  every connection in a TLS session (OpenSSL); PEM material only. Server-auth: PEM
+  trust (`ca_file`, empty = system store), SNI, host-name validation (default on),
+  min TLS 1.2. Mutual TLS: PEM client cert + key. URI keys: `ca_file`,
+  `sni_host_name`, `ssl_hostname_validation`, `client_cert_file`, `client_key_file`,
+  `client_key_password`. Java keystore keys (`*_store_file_name`/`*_store_type`/…)
+  are rejected with a pointer to the PEM key; JKS/PKCS12 and cipher tuning deferred
+  (issue #10)
 - ✅ **Multi-server seed list** (issue #12) — all hosts in the URI become seed
   servers with startup *and* runtime failover (ops fall back to the seed list when
   the connected server dies or no topology is known, e.g. in BASIC mode)
@@ -259,15 +262,21 @@ cache->connect();
 // #12): connect() tries each in order, and ops fall back to the seed list when the
 // connected server dies or no topology is known (e.g. BASIC mode). Credentials
 // enable SCRAM, and sasl_mechanism/client_intelligence/protocol_version (Java
-// "4.0"/"4.1" form) are honoured. hotrods:// enables server-auth TLS; the
-// trust_store_file_name (PEM CA) / sni_host_name / ssl_hostname_validation params
-// map to setTls(...). Userinfo and query values are percent-decoded (RFC 3986), so
-// a reserved character in a password is written encoded — e.g. a password of p@ss
-// is "...://admin:p%40ss@host". Timeouts, mutual TLS, and other parameters throw
-// for now (see issue #10).
+// "4.0"/"4.1" form) are honoured. hotrods:// enables TLS (PEM material only); the
+// ca_file (PEM CA) / sni_host_name / ssl_hostname_validation params and the mutual-
+// TLS client_cert_file / client_key_file / client_key_password params map to
+// setTls(...). The Java keystore keys (trust_store_file_name, key_store_*, …) are
+// rejected with a pointer to the PEM key. Userinfo and query values are percent-
+// decoded (RFC 3986), so a reserved character in a password is written encoded —
+// e.g. a password of p@ss is "...://admin:p%40ss@host". Timeouts and other
+// parameters throw for now (see issue #10).
 //
-//   // TLS from a URI (private CA):
-//   auto c = RemoteCache::fromUri("hotrods://cache:11222?trust_store_file_name=/etc/pki/ca.pem");
+//   // Server-auth TLS from a URI (private CA):
+//   auto c = RemoteCache::fromUri("hotrods://cache:11222?ca_file=/etc/pki/ca.pem");
+//   // Mutual TLS (client cert + key):
+//   auto m = RemoteCache::fromUri("hotrods://cache:11222?ca_file=/etc/pki/ca.pem"
+//                                 "&client_cert_file=/etc/pki/client.pem"
+//                                 "&client_key_file=/etc/pki/client-key.pem");
 //   // or programmatically:
 //   RemoteCache cache("cache", 11222);
 //   cache.setTls("/etc/pki/ca.pem");  // ca_file; empty = system trust store
@@ -285,9 +294,9 @@ cache->connect();
   `replaceWithVersion`, `removeWithVersion`, `putIfAbsent`, `replace`, `containsKey`
 - ✅ **Step 11 — Error handling** (shipped): ERROR response parsing, typed exception,
   user-decided retry (keyed + keyless)
-- ✅ **Server-authenticated TLS** (shipped, issue #18): `hotrods://` + `setTls(...)`
+- ✅ **TLS, incl. mutual TLS** (shipped, issue #18): `hotrods://` + `setTls(...)`, PEM only
 - **Step 12 — Bulk operations** (next): `GET_ALL`, `PUT_ALL`, `BULK_GET`
-- Also: multiplexing benchmarks, mutual TLS (client cert/key, issue #10)
+- Also: multiplexing benchmarks, non-SCRAM SASL + PKCS12/JKS keystores (issue #10)
 
 ## Project Structure
 

@@ -209,7 +209,7 @@ TEST(HotRodURITest, PlainSchemeHasNoTls) {
 TEST(HotRodURITest, TlsParamsParsedIntoConfig) {
     HotRodURI u = HotRodURI::parse(
         "hotrods://localhost"
-        "?trust_store_file_name=/etc/pki/ca.pem"
+        "?ca_file=/etc/pki/ca.pem"
         "&sni_host_name=cache.example.com"
         "&ssl_hostname_validation=false");
     ASSERT_TRUE(u.tls.has_value());
@@ -217,6 +217,24 @@ TEST(HotRodURITest, TlsParamsParsedIntoConfig) {
     EXPECT_EQ(u.tls->ca_file, "/etc/pki/ca.pem");
     EXPECT_EQ(u.tls->sni_host, "cache.example.com");
     EXPECT_FALSE(u.tls->hostname_validation);
+    // No client identity unless explicitly supplied.
+    EXPECT_TRUE(u.tls->cert_file.empty());
+    EXPECT_TRUE(u.tls->key_file.empty());
+    EXPECT_TRUE(u.tls->key_password.empty());
+}
+
+TEST(HotRodURITest, MutualTlsClientIdentityParsedIntoConfig) {
+    HotRodURI u = HotRodURI::parse(
+        "hotrods://localhost"
+        "?ca_file=/ca.pem"
+        "&client_cert_file=/client.pem"
+        "&client_key_file=/client-key.pem"
+        "&client_key_password=s3cret");
+    ASSERT_TRUE(u.tls.has_value());
+    EXPECT_EQ(u.tls->ca_file, "/ca.pem");
+    EXPECT_EQ(u.tls->cert_file, "/client.pem");
+    EXPECT_EQ(u.tls->key_file, "/client-key.pem");
+    EXPECT_EQ(u.tls->key_password, "s3cret");
 }
 
 TEST(HotRodURITest, TlsHostnameValidationBooleanCaseInsensitive) {
@@ -234,21 +252,32 @@ TEST(HotRodURITest, TlsHostnameValidationBadBooleanThrows) {
 TEST(HotRodURITest, TlsParamsOnPlainSchemeThrow) {
     // TLS params require hotrods://; silently ignoring them would hide a mistake.
     EXPECT_THROW(HotRodURI::parse("hotrod://h?sni_host_name=x"), HotRodClientException);
-    EXPECT_THROW(HotRodURI::parse("hotrod://h?trust_store_file_name=/ca.pem"),
+    EXPECT_THROW(HotRodURI::parse("hotrod://h?ca_file=/ca.pem"), HotRodClientException);
+    EXPECT_THROW(HotRodURI::parse("hotrod://h?client_cert_file=/c.pem"),
                  HotRodClientException);
 }
 
-TEST(HotRodURITest, DeferredTlsKeysThrow) {
-    // Recognized Java TLS keys we do not implement in this slice (mutual TLS,
-    // keystore formats, cipher/protocol tuning) are rejected, not ignored.
+TEST(HotRodURITest, JavaKeystoreKeysRejectedWithRedirect) {
+    // The Java keystore (JKS/PKCS12) TLS keys are rejected — this client uses PEM.
+    // They throw regardless of scheme so a ported Java URI fails fast with a fix.
     for (const char* uri : {
-             "hotrods://h?use_ssl=true",
+             "hotrods://h?trust_store_file_name=/truststore.jks",
              "hotrods://h?trust_store_type=pkcs12",
              "hotrods://h?trust_store_password=secret",
              "hotrods://h?key_store_file_name=/client.p12",
              "hotrods://h?key_store_type=pkcs12",
              "hotrods://h?key_store_password=secret",
              "hotrods://h?key_alias=client",
+         }) {
+        EXPECT_THROW(HotRodURI::parse(uri), HotRodClientException) << uri;
+    }
+}
+
+TEST(HotRodURITest, DeferredTlsKeysThrow) {
+    // Recognized Java TLS keys we do not implement: the scheme-independent SSL
+    // toggle and protocol/cipher/provider tuning are deferred (issue #10).
+    for (const char* uri : {
+             "hotrods://h?use_ssl=true",
              "hotrods://h?ssl_protocol=TLSv1.3",
              "hotrods://h?ssl_ciphers=TLS_AES_256_GCM_SHA384",
              "hotrods://h?ssl_named_groups=x25519",

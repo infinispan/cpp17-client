@@ -61,13 +61,24 @@ std::string fixture(const char* name) {
 // cert + key. Robust to clients that abort mid-handshake (failure-path tests).
 class TlsEchoServer {
 public:
-    TlsEchoServer(const std::string& certFile, const std::string& keyFile) {
+    // clientCaFile != "" turns on mutual TLS: the server requires a client
+    // certificate and verifies it against that PEM CA.
+    TlsEchoServer(const std::string& certFile, const std::string& keyFile,
+                  const std::string& clientCaFile = "") {
         ctx_ = SSL_CTX_new(TLS_server_method());
         if (!ctx_) throw std::runtime_error("server SSL_CTX_new failed");
         if (SSL_CTX_use_certificate_chain_file(ctx_, certFile.c_str()) != 1)
             throw std::runtime_error("server cert load failed: " + certFile);
         if (SSL_CTX_use_PrivateKey_file(ctx_, keyFile.c_str(), SSL_FILETYPE_PEM) != 1)
             throw std::runtime_error("server key load failed: " + keyFile);
+
+        if (!clientCaFile.empty()) {
+            if (SSL_CTX_load_verify_locations(ctx_, clientCaFile.c_str(), nullptr) != 1)
+                throw std::runtime_error("server client-CA load failed: " + clientCaFile);
+            SSL_CTX_set_verify(ctx_,
+                               SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                               nullptr);
+        }
 
         listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
         if (listenFd_ < 0) throw std::runtime_error("server socket() failed");
@@ -204,6 +215,76 @@ TEST(TlsConnectionTest, HostnameMismatch_ValidationOff_Succeeds) {
     ASSERT_NO_THROW(conn.connect());
 
     conn.close();
+    server.stop();
+}
+
+// --- mutual TLS (client certificate) -----------------------------------------
+
+TEST(MutualTlsConnectionTest, ClientCertPresentedAndTrusted_HandshakeSucceeds) {
+    // Server requires a client cert signed by clientca.pem.
+    TlsEchoServer server(fixture("server.pem"), fixture("server.key"),
+                         fixture("clientca.pem"));
+
+    Connection conn("127.0.0.1", server.port());
+    TlsConfig tls = clientTls(fixture("ca.pem"), "test.local", true);
+    tls.cert_file = fixture("client.pem");
+    tls.key_file = fixture("client.key");
+    conn.setTls(tls);
+    ASSERT_NO_THROW(conn.connect());
+
+    const ByteArray msg{0x11, 0x22, 0x33};
+    conn.send(msg);
+    EXPECT_EQ(conn.receive(msg.size()), msg);
+
+    conn.close();
+    server.stop();
+}
+
+TEST(MutualTlsConnectionTest, NoClientCertWhenServerRequires_Fails) {
+    TlsEchoServer server(fixture("server.pem"), fixture("server.key"),
+                         fixture("clientca.pem"));
+
+    Connection conn("127.0.0.1", server.port());
+    // Server-auth only: no client cert presented, but the server demands one.
+    conn.setTls(clientTls(fixture("ca.pem"), "test.local", true));
+    // Under TLS 1.2 the server's "certificate required" rejection fails the
+    // handshake at connect(); under TLS 1.3 SSL_connect completes and the alert
+    // only surfaces on the first I/O (which is what production does next: a PING /
+    // SASL exchange). Either way the exchange must fail, not silently succeed.
+    EXPECT_THROW({
+        conn.connect();
+        conn.send(ByteArray{0x01});
+        conn.receive(1);
+    }, std::runtime_error);
+
+    server.stop();
+}
+
+TEST(MutualTlsConnectionTest, CertWithoutKey_IsConfigError) {
+    TlsEchoServer server(fixture("server.pem"), fixture("server.key"),
+                         fixture("clientca.pem"));
+
+    Connection conn("127.0.0.1", server.port());
+    TlsConfig tls = clientTls(fixture("ca.pem"), "test.local", true);
+    tls.cert_file = fixture("client.pem");  // key_file deliberately left empty
+    conn.setTls(tls);
+    EXPECT_THROW(conn.connect(), std::runtime_error);
+
+    server.stop();
+}
+
+TEST(MutualTlsConnectionTest, MismatchedCertAndKey_IsConfigError) {
+    TlsEchoServer server(fixture("server.pem"), fixture("server.key"),
+                         fixture("clientca.pem"));
+
+    Connection conn("127.0.0.1", server.port());
+    TlsConfig tls = clientTls(fixture("ca.pem"), "test.local", true);
+    // Client cert paired with the *server* key -> SSL_CTX_check_private_key fails.
+    tls.cert_file = fixture("client.pem");
+    tls.key_file = fixture("server.key");
+    conn.setTls(tls);
+    EXPECT_THROW(conn.connect(), std::runtime_error);
+
     server.stop();
 }
 

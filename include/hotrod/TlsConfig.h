@@ -12,11 +12,11 @@ namespace hotrod {
  * cluster member — in a TLS session (OpenSSL) before the connection is used for
  * operations.
  *
- * This first slice is *server-authenticated* TLS only: the client verifies the
- * server's certificate chain, but does not present a client certificate (mutual
- * TLS is deferred — see issue #10). Certificate material is PEM, loaded directly
- * by OpenSSL; Java keystore formats (JKS/PKCS12) are intentionally not supported
- * for this native/OpenSSL client (see docs/DECISIONS.md).
+ * The client always verifies the server's certificate chain. It additionally
+ * presents a client certificate (mutual TLS) when `cert_file`/`key_file` are set.
+ * All certificate material is PEM, loaded directly by OpenSSL; Java keystore
+ * formats (JKS/PKCS12) are intentionally not supported for this native/OpenSSL
+ * client (see docs/DECISIONS.md).
  *
  * Fields:
  *  - ca_file: path to a PEM file holding the trusted CA certificate(s) used to
@@ -30,16 +30,30 @@ namespace hotrod {
  *    server certificate must match the connection host name. When false only the
  *    certificate *chain* is verified, not the host name — chain verification is
  *    always on; this toggle governs the host-name match alone.
+ *  - cert_file: path to a PEM file holding the client certificate chain presented
+ *    to the server for mutual TLS. Empty means "no client certificate" (the
+ *    default; server-authenticated TLS only). Set together with key_file.
+ *  - key_file: path to a PEM file holding the client private key matching
+ *    cert_file. Empty means none. cert_file and key_file must be set together; a
+ *    cert without a key (or vice versa) is a configuration error caught at handshake.
+ *  - key_password: passphrase for an encrypted key_file. Empty means the key is
+ *    unencrypted. Supplied to OpenSSL so an encrypted key never blocks on a
+ *    terminal passphrase prompt.
  *
  * Reference:
  * - Java: org.infinispan.client.hotrod.configuration.SslConfiguration
- *   (hostnameValidation default true; sniHostName; trustStore*).
+ *   (hostnameValidation default true; sniHostName; trustStore and keyStore). Java's
+ *   trust/key stores are keystore containers; the PEM equivalents here are
+ *   ca_file (trust) and cert_file/key_file (client identity).
  */
 struct TlsConfig {
     bool        enabled             = false;
     std::string ca_file;                         // PEM; empty = system trust store
     std::string sni_host;                        // empty = derive from host (skip for IPs)
     bool        hostname_validation = true;      // Java's default
+    std::string cert_file;                       // PEM client cert chain (mTLS); empty = none
+    std::string key_file;                        // PEM client private key; empty = none
+    std::string key_password;                    // passphrase for an encrypted key_file
 };
 
 }  // namespace hotrod

@@ -30,16 +30,19 @@ namespace hotrod {
  *
  * Scope (the rest is deferred to issue #10):
  *  - scheme: "hotrod://" (plain) or "hotrods://" (TLS, issue #18). "hotrods://"
- *    enables server-authenticated TLS; the PEM trust subset of the Java query
- *    keys is parsed into `tls` (trust_store_file_name, sni_host_name,
- *    ssl_hostname_validation). Mutual-TLS / keystore keys remain rejected.
+ *    enables TLS; the PEM TLS keys are parsed into `tls`: `ca_file` (server trust),
+ *    `sni_host_name`, `ssl_hostname_validation`, and the mutual-TLS client identity
+ *    `client_cert_file` / `client_key_file` / `client_key_password`. The Java
+ *    keystore keys (trust_store_file_name, key_store_file_name, *_store_type/
+ *    password, key_alias) are rejected with a message pointing at the PEM keys,
+ *    because this client uses PEM, not JKS/PKCS12 (see docs/DECISIONS.md).
  *  - multiple comma-separated servers are parsed into `servers`; all of them become
  *    seed servers with startup + runtime failover (issue #12) — RemoteCache tries
  *    them in order at connect() and falls back to the list when the learned
  *    topology is empty or exhausted. `seed()` is retained as the first host.
  *  - query parameters are a typed whitelist; an unknown key or a bad value for a
- *    known key throws. Deferred params (timeouts, non-SCRAM SASL, mutual-TLS /
- *    keystore TLS keys) are therefore rejected rather than silently ignored.
+ *    known key throws. Deferred params (timeouts, non-SCRAM SASL) and the Java
+ *    keystore TLS keys are therefore rejected rather than silently ignored.
  */
 struct HotRodURI {
     std::vector<ServerAddress>       servers;             // all parsed, in order (>=1)
@@ -265,9 +268,9 @@ inline HotRodURI HotRodURI::parse(const std::string& uri) {
                         fail("unsupported protocol_version '" + value +
                              "' (supported: 4.0, 4.1)");
                     }
-                } else if (key == "trust_store_file_name") {
-                    // PEM CA file for server verification (issue #18). We diverge
-                    // from Java (which reads a JKS/PKCS12 keystore) by requiring PEM.
+                } else if (key == "ca_file") {
+                    // PEM file holding the trusted CA cert(s) used to verify the
+                    // server. This client uses PEM, not a Java JKS/PKCS12 keystore.
                     tls.ca_file = value;
                     sawTlsParam = true;
                 } else if (key == "sni_host_name") {
@@ -276,18 +279,42 @@ inline HotRodURI HotRodURI::parse(const std::string& uri) {
                 } else if (key == "ssl_hostname_validation") {
                     tls.hostname_validation = parseBool(value, "ssl_hostname_validation");
                     sawTlsParam = true;
-                } else if (key == "use_ssl" || key == "trust_store_type" ||
-                           key == "trust_store_password" || key == "key_store_file_name" ||
-                           key == "key_store_type" || key == "key_store_password" ||
-                           key == "key_alias" || key == "ssl_protocol" ||
+                } else if (key == "client_cert_file") {
+                    // PEM client certificate chain for mutual TLS (presented to the
+                    // server). Must be paired with client_key_file.
+                    tls.cert_file = value;
+                    sawTlsParam = true;
+                } else if (key == "client_key_file") {
+                    // PEM client private key matching client_cert_file.
+                    tls.key_file = value;
+                    sawTlsParam = true;
+                } else if (key == "client_key_password") {
+                    // Passphrase for an encrypted client_key_file.
+                    tls.key_password = value;
+                    sawTlsParam = true;
+                } else if (key == "trust_store_file_name" || key == "trust_store_type" ||
+                           key == "trust_store_password") {
+                    // Java keystore trust keys. This client uses PEM: point the user
+                    // at the PEM equivalent instead of silently misreading the file.
+                    fail("Hot Rod URI parameter '" + key +
+                         "' is not supported; this client uses PEM — use 'ca_file=' "
+                         "(a PEM CA bundle) instead. JKS/PKCS12 keystores are not supported.");
+                } else if (key == "key_store_file_name" || key == "key_store_type" ||
+                           key == "key_store_password" || key == "key_alias") {
+                    // Java keystore identity keys -> PEM client cert/key equivalents.
+                    fail("Hot Rod URI parameter '" + key +
+                         "' is not supported; this client uses PEM — use "
+                         "'client_cert_file=' + 'client_key_file=' (PEM) instead. "
+                         "JKS/PKCS12 keystores are not supported.");
+                } else if (key == "use_ssl" || key == "ssl_protocol" ||
                            key == "ssl_ciphers" || key == "ssl_named_groups" ||
                            key == "ssl_provider" || key == "ssl_context") {
-                    // Recognized Java TLS keys that this slice does not implement:
-                    // mutual TLS, keystore formats, and protocol/cipher tuning are
-                    // deferred (issue #10). Reject explicitly rather than silently.
+                    // Recognized Java TLS keys this client does not implement:
+                    // scheme-independent SSL toggle and protocol/cipher/provider
+                    // tuning are deferred (issue #10). Reject explicitly.
                     fail("Hot Rod URI parameter '" + key +
-                         "' is not supported yet (mutual TLS / keystore TLS / "
-                         "cipher tuning are deferred; issue #10)");
+                         "' is not supported yet (use the hotrods:// scheme to enable "
+                         "TLS; protocol/cipher tuning is deferred, issue #10)");
                 } else {
                     fail("unsupported Hot Rod URI parameter: " + key);
                 }

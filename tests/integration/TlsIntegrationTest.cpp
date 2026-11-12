@@ -6,7 +6,7 @@
  * identity, SAN DNS:localhost / IP:127.0.0.1, no SASL). The client trusts the
  * test CA (test-configs/tls/ca.pem). Verifies the real wire end-to-end:
  *   1. Programmatic setTls(ca) -> connect + put/get round-trip over TLS.
- *   2. hotrods:// URI with trust_store_file_name -> same round-trip.
+ *   2. hotrods:// URI with ca_file -> same round-trip.
  *   3. Untrusted anchor (system store, no CA) -> connect() throws.
  *   4. Host-name mismatch with validation on -> throws; with validation off,
  *      the (still chain-verified) connection succeeds.
@@ -107,7 +107,7 @@ TEST(TlsIntegrationTest, FromUriHotrodsRoundTrips) {
     const std::string uri =
         "hotrods://" + TlsServerEnvironment::host + ":" +
         std::to_string(TlsServerEnvironment::port) +
-        "?trust_store_file_name=" + TlsServerEnvironment::caFile;
+        "?ca_file=" + TlsServerEnvironment::caFile;
 
     auto cache = RemoteCache::fromUri(uri, kTlsCache);
     cache->connect();
