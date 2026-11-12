@@ -95,6 +95,7 @@ if(GTest_FOUND)
         tests/unit/AuthCodecTest.cpp
         tests/unit/HotRodURITest.cpp
         tests/unit/SaslAuthenticatorTest.cpp
+        tests/unit/SaslMechanismsTest.cpp
         tests/unit/TlsConnectionTest.cpp
     )
 

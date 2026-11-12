@@ -299,9 +299,166 @@ TEST(SaslAuthenticatorTest, MechanismNotOfferedThrows) {
 TEST(SaslAuthenticatorTest, UnsupportedMechanismThrowsBeforeIO) {
     FakeScramServer server;
 
-    SaslAuthenticator auth(makeAuth("PLAIN", "user", "pencil"), "host", 11222);
+    // GSSAPI is not implemented by this client -> rejected before any I/O.
+    SaslAuthenticator auth(makeAuth("GSSAPI", "user", "pencil"), "host", 11222);
     EXPECT_THROW(auth.authenticate(server), HotRodClientException);
     // Nothing should have been sent to the transport.
     EXPECT_TRUE(server.outbox.empty());
     EXPECT_EQ(server.phase, FakeScramServer::Phase::MechList);
+}
+
+// --- Single-message mechanisms: PLAIN / EXTERNAL / OAUTHBEARER ----------------
+
+namespace {
+
+// A fake server for the single-message mechanisms. It serves the mech list, then
+// captures the one AUTH request and answers with a configurable AUTH_RESPONSE
+// (completed flag) or an ERROR frame. Also models the OAUTHBEARER failure
+// continuation (a non-completed challenge turn followed by an ERROR).
+struct FakeSimpleServer : public SaslTransport {
+    std::vector<std::string> mechs{"PLAIN", "EXTERNAL", "OAUTHBEARER", "SCRAM-SHA-256"};
+    bool completedFlag = true;   // AUTH_RESPONSE completed flag for the first turn
+    bool errorOnFirstAuth = false;
+
+    // Captured from the first AUTH request.
+    std::string lastMech;
+    ByteArray   lastInitial;
+    int         authRequests = 0;
+
+    struct Frame { uint8_t opcode = 0; ByteArray body; bool isError = false; std::string errorMsg; };
+    std::deque<Frame> outbox;
+    ByteArray cursorBody;
+    size_t    cursorOffset = 0;
+
+    void sendRequest(uint8_t opcode, const ByteArray& body) override {
+        if (opcode == Opcode::AUTH_MECH_LIST_REQUEST) {
+            Frame f;
+            f.opcode = Opcode::AUTH_MECH_LIST_RESPONSE;
+            Codec::writeVInt(f.body, static_cast<VInt>(mechs.size()));
+            for (const auto& m : mechs) Codec::writeString(f.body, m);
+            outbox.push_back(std::move(f));
+            return;
+        }
+        ASSERT_EQ(opcode, Opcode::AUTH_REQUEST);
+        ++authRequests;
+
+        if (authRequests == 1) {
+            size_t off = 0;
+            lastMech = Codec::readString(body, off);
+            lastInitial = Codec::readByteArray(body, off);
+            if (errorOnFirstAuth) {
+                outbox.push_back(Frame{Opcode::ERROR_RESPONSE, {}, true, "bad credentials"});
+                return;
+            }
+            Frame f;
+            f.opcode = Opcode::AUTH_RESPONSE;
+            f.body.push_back(completedFlag ? 1 : 0);
+            Codec::writeByteArray(f.body, ByteArray{});  // empty challenge
+            outbox.push_back(std::move(f));
+            return;
+        }
+        // Second AUTH turn (OAUTHBEARER failure continuation): fail with an ERROR.
+        outbox.push_back(Frame{Opcode::ERROR_RESPONSE, {}, true, "oauth rejected"});
+    }
+
+    uint8_t readResponseHeader() override {
+        if (outbox.empty()) throw std::runtime_error("FakeSimpleServer: no response queued");
+        Frame f = std::move(outbox.front());
+        outbox.pop_front();
+        if (f.isError) {
+            throw HotRodClientException("Authentication failed: " + f.errorMsg,
+                                        FailurePhase::ServerError, Status::SERVER_ERROR,
+                                        {{"fake", 0}});
+        }
+        cursorBody = std::move(f.body);
+        cursorOffset = 0;
+        return f.opcode;
+    }
+    uint8_t readByte() override { return cursorBody.at(cursorOffset++); }
+    VInt readVInt() override { return Codec::readVInt(cursorBody, cursorOffset); }
+    std::string readString() override { return Codec::readString(cursorBody, cursorOffset); }
+    ByteArray readByteArray() override { return Codec::readByteArray(cursorBody, cursorOffset); }
+};
+
+}  // namespace
+
+TEST(SaslSimpleMechanismTest, PlainSuccessSendsCorrectInitialResponse) {
+    FakeSimpleServer server;
+    SaslAuthenticator auth(makeAuth("PLAIN", "user", "pencil"), "host", 11222);
+    EXPECT_NO_THROW(auth.authenticate(server));
+
+    EXPECT_EQ(server.lastMech, "PLAIN");
+    // authzid NUL authcid NUL passwd, authzid empty.
+    const ByteArray expected{0x00, 'u','s','e','r', 0x00, 'p','e','n','c','i','l'};
+    EXPECT_EQ(server.lastInitial, expected);
+    EXPECT_EQ(server.authRequests, 1);
+}
+
+TEST(SaslSimpleMechanismTest, PlainRequiresUsername) {
+    FakeSimpleServer server;
+    SaslAuthenticator auth(makeAuth("PLAIN", "", "pencil"), "host", 11222);
+    EXPECT_THROW(auth.authenticate(server), HotRodClientException);
+}
+
+TEST(SaslSimpleMechanismTest, PlainBadCredentialsThrows) {
+    FakeSimpleServer server;
+    server.errorOnFirstAuth = true;
+    SaslAuthenticator auth(makeAuth("PLAIN", "user", "wrong"), "host", 11222);
+    EXPECT_THROW(auth.authenticate(server), HotRodClientException);
+}
+
+TEST(SaslSimpleMechanismTest, ExternalSendsEmptyAuthzidByDefault) {
+    FakeSimpleServer server;
+    Authentication a;
+    a.enabled = true;
+    a.mechanism = "EXTERNAL";  // no username/password: identity from the client cert
+    SaslAuthenticator auth(a, "host", 11222);
+    EXPECT_NO_THROW(auth.authenticate(server));
+
+    EXPECT_EQ(server.lastMech, "EXTERNAL");
+    EXPECT_TRUE(server.lastInitial.empty());
+}
+
+TEST(SaslSimpleMechanismTest, OAuthBearerSendsBearerToken) {
+    FakeSimpleServer server;
+    Authentication a;
+    a.enabled = true;
+    a.mechanism = "OAUTHBEARER";
+    a.token = "tok123";
+    SaslAuthenticator auth(a, "host", 11222);
+    EXPECT_NO_THROW(auth.authenticate(server));
+
+    EXPECT_EQ(server.lastMech, "OAUTHBEARER");
+    const std::string got(server.lastInitial.begin(), server.lastInitial.end());
+    const std::string expected = std::string("n,,") + '\x01' + "auth=Bearer tok123" + '\x01' + '\x01';
+    EXPECT_EQ(got, expected);
+}
+
+TEST(SaslSimpleMechanismTest, OAuthBearerRequiresToken) {
+    FakeSimpleServer server;
+    Authentication a;
+    a.enabled = true;
+    a.mechanism = "OAUTHBEARER";  // no token
+    SaslAuthenticator auth(a, "host", 11222);
+    EXPECT_THROW(auth.authenticate(server), HotRodClientException);
+}
+
+TEST(SaslSimpleMechanismTest, OAuthBearerFailureContinuationThrows) {
+    FakeSimpleServer server;
+    server.completedFlag = false;  // server returns a non-completed error challenge
+    Authentication a;
+    a.enabled = true;
+    a.mechanism = "OAUTHBEARER";
+    a.token = "bad";
+    SaslAuthenticator auth(a, "host", 11222);
+    EXPECT_THROW(auth.authenticate(server), HotRodClientException);
+    // The client sent the initial token plus the RFC 7628 kvsep continuation.
+    EXPECT_EQ(server.authRequests, 2);
+}
+
+TEST(SaslSimpleMechanismTest, MechanismNotOfferedThrows) {
+    FakeSimpleServer server;
+    server.mechs = {"SCRAM-SHA-256"};  // PLAIN not offered
+    SaslAuthenticator auth(makeAuth("PLAIN", "user", "pencil"), "host", 11222);
+    EXPECT_THROW(auth.authenticate(server), HotRodClientException);
 }

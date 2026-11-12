@@ -78,21 +78,20 @@ namespace hotrod
       {
          cache->setProtocolVersion(*parsed.protocolVersion);
       }
-      if (parsed.username)
+      // Authentication is enabled when the URI carries any auth signal: a
+      // mechanism, credentials, or an OAUTHBEARER token. EXTERNAL (identity from
+      // the client cert) and OAUTHBEARER (token) need no username, so the gate is
+      // not "username present". The mechanism defaults to SCRAM-SHA-256 and is
+      // validated at connect() (SaslAuthenticator).
+      if (parsed.saslMechanism || parsed.username || parsed.token)
       {
-         // Credentials present -> enable SCRAM. Mechanism from the query if given,
-         // else the setAuthentication default (SCRAM-SHA-256). Non-SCRAM mechanisms
-         // are rejected later at connect().
-         const std::string password = parsed.password.value_or("");
-         if (parsed.saslMechanism)
-         {
-            cache->setAuthentication(*parsed.username, password, "default",
-                                     "infinispan", *parsed.saslMechanism);
-         }
-         else
-         {
-            cache->setAuthentication(*parsed.username, password);
-         }
+         Authentication auth;
+         auth.enabled = true;
+         if (parsed.username) auth.username = *parsed.username;
+         if (parsed.password) auth.password = *parsed.password;
+         if (parsed.token) auth.token = *parsed.token;
+         if (parsed.saslMechanism) auth.mechanism = *parsed.saslMechanism;
+         cache->setAuthentication(auth);
       }
 
       // TLS: the hotrods:// scheme enables it; the PEM TLS keys (ca_file /

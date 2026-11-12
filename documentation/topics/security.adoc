@@ -2,17 +2,20 @@
 
 === Authentication
 
-The client authenticates over SASL. The **SCRAM family** is implemented:
+The client authenticates over SASL. These mechanisms are implemented:
 
 * **SCRAM-SHA-256** -- the default when you call `setAuthentication(...)`.
-* **SCRAM-SHA-1**
-* **SCRAM-SHA-512**
+* **SCRAM-SHA-1**, **SCRAM-SHA-512**
+* **PLAIN** -- username + password (always use over TLS; the password is sent
+  effectively in the clear).
+* **EXTERNAL** -- the identity comes from the mutual-TLS client certificate (no
+  username/password needed); requires a `hotrods://` connection presenting a
+  client cert (see _TLS / mutual TLS_ below).
+* **OAUTHBEARER** -- a bearer `token` (e.g. an OAuth2/OIDC access token).
 
-Any other mechanism (`PLAIN`, `DIGEST-MD5`, `EXTERNAL`, `GSSAPI`,
-`OAUTHBEARER`, …) throws a `HotRodClientException` at `connect()` time with a
-clear "unsupported SASL mechanism" message. C++ has no JDK-style SASL provider
-framework, so each mechanism is hand-rolled over OpenSSL; only the SCRAM variants
-share the generalized implementation today.
+Any other mechanism (`DIGEST-MD5`, `GSSAPI`, …) throws a `HotRodClientException`
+at `connect()` time with a clear "unsupported SASL mechanism" message. C++ has no
+JDK-style SASL provider framework, so each mechanism is hand-rolled over OpenSSL.
 
 ==== Configuring authentication
 
@@ -56,12 +59,49 @@ void setAuthentication(const std::string& username,
                        const std::string& mechanism  = "SCRAM-SHA-256");
 ----
 
-To use a different SCRAM variant, pass the mechanism explicitly:
+To use a different username/password mechanism (another SCRAM variant, or PLAIN),
+pass the mechanism explicitly:
 
 [source,cpp]
 ----
 cache.setAuthentication("username", "password",
                         "default", "infinispan", "SCRAM-SHA-512");
+
+cache.setAuthentication("username", "password",
+                        "default", "infinispan", "PLAIN");   // use over TLS
+----
+
+For **EXTERNAL** (identity from the client cert) and **OAUTHBEARER** (bearer
+token), build an `Authentication` and use the overload that takes it:
+
+[source,cpp]
+----
+#include "hotrod/Authentication.h"
+
+// OAUTHBEARER: authenticate with a bearer token (no username/password).
+Authentication oauth;
+oauth.mechanism = "OAUTHBEARER";
+oauth.token     = "<access-token>";
+cache.setAuthentication(oauth);
+
+// EXTERNAL: identity is the mutual-TLS client certificate (configure TLS too).
+Authentication external;
+external.mechanism = "EXTERNAL";
+cache.setAuthentication(external);
+----
+
+From a URI, select the mechanism with `sasl_mechanism` (and `token` for
+OAUTHBEARER):
+
+[source,cpp]
+----
+// PLAIN over TLS:
+RemoteCache::fromUri("hotrods://user:pass@host?sasl_mechanism=PLAIN&ca_file=/ca.pem");
+// OAUTHBEARER:
+RemoteCache::fromUri("hotrods://host?sasl_mechanism=OAUTHBEARER&token=<tok>&ca_file=/ca.pem");
+// EXTERNAL (client cert):
+RemoteCache::fromUri("hotrods://host?sasl_mechanism=EXTERNAL"
+                     "&ca_file=/ca.pem&client_cert_file=/client.pem&client_key_file=/client-key.pem");
 ----
 
 ==== Defaults

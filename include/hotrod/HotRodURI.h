@@ -41,14 +41,17 @@ namespace hotrod {
  *    them in order at connect() and falls back to the list when the learned
  *    topology is empty or exhausted. `seed()` is retained as the first host.
  *  - query parameters are a typed whitelist; an unknown key or a bad value for a
- *    known key throws. Deferred params (timeouts, non-SCRAM SASL) and the Java
- *    keystore TLS keys are therefore rejected rather than silently ignored.
+ *    known key throws. Deferred params (timeouts) and the Java keystore TLS keys
+ *    are therefore rejected rather than silently ignored. SASL mechanism selection
+ *    (`sasl_mechanism`) and the OAUTHBEARER `token` are parsed here and validated
+ *    at connect() (SCRAM family, PLAIN, EXTERNAL, OAUTHBEARER are supported).
  */
 struct HotRodURI {
     std::vector<ServerAddress>       servers;             // all parsed, in order (>=1)
     std::optional<std::string>       username;
     std::optional<std::string>       password;
     std::optional<std::string>       saslMechanism;       // e.g. "SCRAM-SHA-256"
+    std::optional<std::string>       token;               // bearer token for OAUTHBEARER
     std::optional<ClientIntelligence> clientIntelligence;
     std::optional<uint8_t>           protocolVersion;     // Protocol::VERSION_40 / _41
     std::optional<TlsConfig>         tls;                 // set when scheme is hotrods://
@@ -244,8 +247,13 @@ inline HotRodURI HotRodURI::parse(const std::string& uri) {
                                                          "query parameter value");
 
                 if (key == "sasl_mechanism") {
-                    // SCRAM-only is enforced later at connect(); pass through here.
+                    // The mechanism is validated at connect() (SaslAuthenticator);
+                    // pass it through here.
                     result.saslMechanism = value;
+                } else if (key == "token") {
+                    // Bearer token for OAUTHBEARER (used only when the mechanism is
+                    // OAUTHBEARER; validated at connect()).
+                    result.token = value;
                 } else if (key == "client_intelligence") {
                     const std::string v = toLower(value);
                     if (v == "basic") {

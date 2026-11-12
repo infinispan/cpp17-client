@@ -184,7 +184,33 @@ TEST(HotRodURITest, QueryParamMissingEqualsThrows) {
 TEST(HotRodURITest, UnknownParamThrows) {
     EXPECT_THROW(HotRodURI::parse("hotrod://h?connect_timeout=5000"), HotRodClientException);
     EXPECT_THROW(HotRodURI::parse("hotrod://h?socket_timeout=5000"), HotRodClientException);
-    EXPECT_THROW(HotRodURI::parse("hotrod://h?token=abc"), HotRodClientException);
+    EXPECT_THROW(HotRodURI::parse("hotrod://h?nonsense=1"), HotRodClientException);
+}
+
+// --- SASL mechanism selection + OAUTHBEARER token ----------------------------
+
+TEST(HotRodURITest, SaslMechanismParsed) {
+    HotRodURI u = HotRodURI::parse("hotrod://admin:pass@h?sasl_mechanism=PLAIN");
+    ASSERT_TRUE(u.saslMechanism.has_value());
+    EXPECT_EQ(*u.saslMechanism, "PLAIN");
+    EXPECT_EQ(*u.username, "admin");
+    EXPECT_FALSE(u.token.has_value());
+}
+
+TEST(HotRodURITest, OAuthBearerTokenParsed) {
+    // OAUTHBEARER needs no userinfo; the token carries the identity.
+    HotRodURI u = HotRodURI::parse("hotrod://h?sasl_mechanism=OAUTHBEARER&token=abc.def");
+    ASSERT_TRUE(u.saslMechanism.has_value());
+    EXPECT_EQ(*u.saslMechanism, "OAUTHBEARER");
+    ASSERT_TRUE(u.token.has_value());
+    EXPECT_EQ(*u.token, "abc.def");
+    EXPECT_FALSE(u.username.has_value());
+}
+
+TEST(HotRodURITest, TokenPercentDecoded) {
+    HotRodURI u = HotRodURI::parse("hotrod://h?token=a%2Bb%2Fc");
+    ASSERT_TRUE(u.token.has_value());
+    EXPECT_EQ(*u.token, "a+b/c");
 }
 
 // --- TLS: hotrods:// scheme + server-auth PEM subset (issue #18) -------------
