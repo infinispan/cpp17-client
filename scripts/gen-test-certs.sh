@@ -65,6 +65,14 @@ make_leaf "$UNIT_DIR/ca.pem"      "$TMP/ca.key" \
 chmod 600 "$UNIT_DIR/server.key"
 # Second, unrelated root for the untrusted-anchor rejection test (key discarded).
 make_ca   "$UNIT_DIR/otherca.pem" "$TMP/otherca.key" "Other Root CA"
+# Client identity for the mutual-TLS tests: a client CA (committed, so the test
+# server can trust it) and a client leaf signed by it (client.pem + client.key).
+# The client CA *private* key is discarded, like the other CAs.
+make_ca   "$UNIT_DIR/clientca.pem" "$TMP/clientca.key" "Test Client CA"
+make_leaf "$UNIT_DIR/clientca.pem" "$TMP/clientca.key" \
+          "$UNIT_DIR/client.key"  "$UNIT_DIR/client.pem" \
+          "test-client" "DNS:test-client"
+chmod 600 "$UNIT_DIR/client.key"
 
 echo ">> integration certs -> $INT_DIR"
 make_ca   "$INT_DIR/ca.pem"       "$TMP/int-ca.key"  "Integration Test CA"

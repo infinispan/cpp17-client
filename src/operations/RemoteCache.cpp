@@ -95,9 +95,9 @@ namespace hotrod
          }
       }
 
-      // TLS: the hotrods:// scheme enables it; the server-auth PEM subset of the
-      // Java query keys (trust_store_file_name / sni_host_name /
-      // ssl_hostname_validation) is carried in parsed.tls (issue #18).
+      // TLS: the hotrods:// scheme enables it; the PEM TLS keys (ca_file /
+      // sni_host_name / ssl_hostname_validation and the mutual-TLS client_cert_file
+      // / client_key_file / client_key_password) are carried in parsed.tls (#18).
       if (parsed.tls)
       {
          cache->setTls(*parsed.tls);

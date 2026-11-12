@@ -146,5 +146,61 @@ tested config):
 
 === TLS / mutual TLS
 
-Transport encryption (TLS/SSL) is **not yet implemented**. See `docs/STATUS.md`
-for the current roadmap.
+Transport encryption (TLS/SSL) is supported over OpenSSL. All certificate
+material is **PEM** — Java keystore formats (JKS/PKCS12) are not supported.
+
+Enable it with the `hotrods://` URI scheme or `RemoteCache::setTls(...)`; every
+connection the client opens (the seed connection and every topology-discovered
+cluster member) is then wrapped in a TLS session (minimum TLS 1.2).
+
+**Server-authenticated TLS** verifies the server's certificate chain (always on)
+and, by default, that the certificate matches the host name:
+
+[source,cpp]
+----
+// URI form (private CA):
+auto c = RemoteCache::fromUri("hotrods://cache:11222?ca_file=/etc/pki/ca.pem");
+
+// Programmatic form (empty ca_file = system/default trust store):
+RemoteCache cache("cache", 11222);
+cache.setTls("/etc/pki/ca.pem");
+----
+
+**Mutual TLS** additionally presents a client certificate. Supply a PEM client
+cert chain and its private key (and a passphrase if the key is encrypted):
+
+[source,cpp]
+----
+auto c = RemoteCache::fromUri(
+    "hotrods://cache:11222"
+    "?ca_file=/etc/pki/ca.pem"
+    "&client_cert_file=/etc/pki/client.pem"
+    "&client_key_file=/etc/pki/client-key.pem");
+
+// Or programmatically:
+TlsConfig tls;
+tls.enabled   = true;
+tls.ca_file   = "/etc/pki/ca.pem";
+tls.cert_file = "/etc/pki/client.pem";
+tls.key_file  = "/etc/pki/client-key.pem";
+// tls.key_password = "...";  // only if the key is encrypted
+cache.setTls(tls);
+----
+
+.TLS URI query keys
+[cols="1,2",options="header"]
+|===
+| Key | Meaning
+| `ca_file` | PEM CA bundle to verify the server; empty = system trust store
+| `sni_host_name` | SNI server name (skipped for literal IP addresses)
+| `ssl_hostname_validation` | `true` (default) / `false` — host-name match toggle
+| `client_cert_file` | PEM client certificate chain (mutual TLS)
+| `client_key_file` | PEM client private key matching `client_cert_file`
+| `client_key_password` | passphrase for an encrypted `client_key_file`
+|===
+
+NOTE: The Java keystore keys (`trust_store_file_name`, `key_store_file_name`,
+`*_store_type`/`*_store_password`, `key_alias`) are rejected — this client uses
+PEM. Use `ca_file` for trust and `client_cert_file` + `client_key_file` for the
+client identity. Protocol/cipher tuning (`ssl_protocol`, `ssl_ciphers`, …) is not
+yet supported (issue #10). See `docs/STATUS.md` for the current roadmap.

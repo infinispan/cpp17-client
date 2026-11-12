@@ -4,7 +4,7 @@
 > If any other doc disagrees with this file, this file wins. Point-in-time
 > snapshots live in [`archive/`](archive/) and are historical only.
 >
-> **Last updated:** 2026-11-09
+> **Last updated:** 2026-11-12
 
 ---
 
@@ -41,9 +41,11 @@ _The 1–3 concrete things to do next. Keep this short and current._
    (two `TODO`s in `src/operations/RemoteCache.cpp`).
 
 _Recently shipped (detail in "Working and shipped" + [`DECISIONS.md`](DECISIONS.md)):
-server-authenticated TLS for `hotrods://` (#18, 2026-11-06), multi-server seed
-list + failover (#12), Hot Rod URI `fromUri` (#9), SASL/SCRAM auth, Step 11 error
-handling + user-decided retry, Step 10 metadata/CAS._
+mutual TLS (PEM client cert/key) + PEM-honest TLS URI keys (`ca_file`,
+`client_cert_file`/`client_key_file`; Java keystore keys now rejected with a
+redirect) (#18, 2026-11-12), server-authenticated TLS for `hotrods://` (#18,
+2026-11-06), multi-server seed list + failover (#12), Hot Rod URI `fromUri` (#9),
+SASL/SCRAM auth, Step 11 error handling + user-decided retry, Step 10 metadata/CAS._
 
 ---
 
@@ -59,19 +61,26 @@ pull from here next. Step numbers follow
   `BULK_GET` (0x1F, iterator-style).
 
 **Other known work (not roadmap steps):**
+- [ ] **Mutual-TLS integration coverage** — client cert/key is unit-tested
+  (in-process OpenSSL server requiring a client cert) but not yet covered by the
+  Docker `TlsIntegrationTest`, which needs the Infinispan server configured to
+  require/verify client certs (extend `scripts/start_infinispan_tls.sh` +
+  `gen-test-certs.sh` already emits the unit client cert).
 - [ ] **Benchmark the multiplexing path** — the async rewrite targets 5–10×
   concurrent throughput; unmeasured so far.
 - [ ] **Code cleanup:** read header "other params" when `paramCount > 0`
   (`src/operations/RemoteCache.cpp:140,182`).
 - [ ] **Hot Rod URI — deferred features (issue #10):** `connect_timeout`/
-  `socket_timeout`, non-SCRAM SASL (PLAIN/OAUTHBEARER `token`),
-  `protocol_version=AUTO`/3.x. Each drops its "unsupported" throw from
-  `HotRodURI::parse` once the capability lands. (Multi-server seed list — #12 —
-  and server-auth TLS — #18 — are already shipped; see "Working and shipped".)
-- [ ] **Mutual TLS + TLS tuning (deferred part of #18/#10):** client cert/key
-  (`key_store_*`), Java keystore formats (JKS/PKCS12, `*_store_type`/password/
-  alias), and `ssl_protocol`/`ssl_ciphers`/`ssl_named_groups`/`ssl_provider`.
-  These URI keys are currently recognized and rejected with "not supported yet".
+  `socket_timeout`, non-SCRAM SASL (PLAIN/OAUTHBEARER `token`, EXTERNAL — now
+  unblocked by mutual TLS), `protocol_version=AUTO`/3.x. Each drops its
+  "unsupported" throw from `HotRodURI::parse` once the capability lands.
+  (Multi-server seed list — #12 — and TLS incl. mutual TLS — #18 — are already
+  shipped; see "Working and shipped".)
+- [ ] **TLS keystore formats + tuning (deferred part of #18/#10):** Java keystore
+  formats (JKS/PKCS12, `*_store_file_name`/`*_store_type`/password/`key_alias`) —
+  this client is PEM-only, so these URI keys are rejected with a redirect to the
+  PEM keys (`ca_file`, `client_cert_file`/`client_key_file`). Also deferred:
+  `ssl_protocol`/`ssl_ciphers`/`ssl_named_groups`/`ssl_provider`/`use_ssl`.
 
 **Longer horizon (Step 14+ advanced features):** transactions (XA), client
 listeners/events, counters, Ickle queries, streaming ops (4.1+), multimap,
@@ -93,23 +102,32 @@ Rod URI `fromUri` (#9), multi-server seed list + failover (#12)._
   `hotrod[s]://[user:pass@]host[:port][,host...][?k=v]` connection string (issue #9);
   pure header-only parser `HotRodURI::parse` (`include/hotrod/HotRodURI.h`).
   `hotrod://` and `hotrods://` (TLS) schemes, SCRAM via credentials,
-  `sasl_mechanism`/`client_intelligence`/`protocol_version` + the server-auth TLS
-  params (`trust_store_file_name`/`sni_host_name`/`ssl_hostname_validation`);
-  userinfo and query values are percent-decoded (java.net.URI parity); unsupported
-  schemes/params throw. timeouts/non-SCRAM/mutual-TLS deferred (issue #10)
-- **Server-authenticated TLS (`hotrods://`, issue #18)** — `RemoteCache::setTls(...)`
+  `sasl_mechanism`/`client_intelligence`/`protocol_version` + the PEM TLS params
+  (`ca_file`/`sni_host_name`/`ssl_hostname_validation` and mutual-TLS
+  `client_cert_file`/`client_key_file`/`client_key_password`); userinfo and query
+  values are percent-decoded (java.net.URI parity); unsupported schemes/params and
+  the Java keystore keys throw. timeouts/non-SCRAM deferred (issue #10)
+- **TLS incl. mutual TLS (`hotrods://`, issue #18)** — `RemoteCache::setTls(...)`
   (and the `hotrods://` scheme) wrap every connection the client opens (seed +
-  topology-discovered) in a TLS session over OpenSSL. PEM trust material
-  (`ca_file`, empty = system store), SNI (`sni_host`, skipped for literal IPs),
-  and host-name validation (`hostname_validation`, default on; chain verification
-  always on). Min TLS 1.2. `include/hotrod/TlsConfig.h`; handshake in
-  `src/transport/Connection.cpp` (host-name validation via the `X509_VERIFY_PARAM`
-  API, so it builds clean on OpenSSL 1.1.0 through 4.0). Unit-tested against an in-process OpenSSL
-  server and end-to-end against a TLS-enabled Infinispan
+  topology-discovered) in a TLS session over OpenSSL. All certificate material is
+  **PEM** (not Java JKS/PKCS12). Server-auth: PEM trust material (`ca_file`, empty =
+  system store), SNI (`sni_host`, skipped for literal IPs), host-name validation
+  (`hostname_validation`, default on; chain verification always on), min TLS 1.2.
+  **Mutual TLS:** PEM client cert chain (`cert_file`) + private key (`key_file`) +
+  optional passphrase (`key_password`), loaded with a passwd callback so an
+  encrypted key never blocks on a prompt; cert/key must be set together.
+  `include/hotrod/TlsConfig.h`; handshake in `src/transport/Connection.cpp`
+  (host-name validation via the `X509_VERIFY_PARAM` API, so it builds clean on
+  OpenSSL 1.1.0 through 4.0). **URI keys:** `ca_file`, `sni_host_name`,
+  `ssl_hostname_validation`, `client_cert_file`, `client_key_file`,
+  `client_key_password`; the Java keystore keys (`trust_store_file_name`,
+  `key_store_*`, `*_store_type`/password, `key_alias`) are rejected with a redirect
+  to the PEM key. Unit-tested against an in-process OpenSSL server (server-auth +
+  mutual TLS) and end-to-end against a TLS-enabled Infinispan
   (`tests/integration/TlsIntegrationTest.cpp`, Docker). A dropped connection is
   SIGPIPE-safe per-connection (MSG_NOSIGNAL / SO_NOSIGPIPE / custom TLS BIO) — no
   process-global signal change — so it surfaces as a thrown exception, not process
-  death. Mutual TLS / keystore formats deferred (#10)
+  death. JKS/PKCS12 keystore formats + cipher/protocol tuning deferred (#10)
 - **Multi-server seed list + failover (`fromUri`, issue #12)** — all
   comma-separated hosts become seed servers. **Startup failover:** `connect()`
   tries each seed in order; all unreachable → one `HotRodClientException` listing
@@ -171,19 +189,22 @@ Rod URI `fromUri` (#9), multi-server seed list + failover (#12)._
   that stalls a subprocess fails fast instead of hanging the whole CI job. See
   [`DECISIONS.md`](DECISIONS.md).
 
-**Test status (verified 2026-10-19):** **250 unit** + **96 integration** (20
-suites), all passing. This is the one authoritative count — other docs describe
-*what* is covered rather than repeating totals. Counts read from the built test
-binaries via `--gtest_list_tests`, so they match what actually runs.
+**Test status:** **266 unit** (verified 2026-11-12) + **96 integration** (20
+suites, verified 2026-10-19), all passing. This is the one authoritative count —
+other docs describe *what* is covered rather than repeating totals. Counts read
+from the built test binaries via `--gtest_list_tests`, so they match what actually
+runs. (The +16 unit tests since 2026-11-09 are the mutual-TLS handshake cases and
+the PEM-honest URI-key parsing/redirect cases.)
 - Unit (`./build/unit_tests`, <1s) — wire primitives/headers, consistent hashing,
-  server-selection/retry helpers, the SASL/SCRAM handshake, and the Hot Rod URI
-  parser.
+  server-selection/retry helpers, the SASL/SCRAM handshake, the TLS handshake
+  (server-auth + mutual TLS, in-process OpenSSL server), and the Hot Rod URI parser.
 - Integration (`ctest`, spins up Docker Infinispan single-server + multi-node
   clusters; also green on Linux CI) — CRUD + metadata/CAS, topology & hash-aware
   routing, keyed/keyless retry (`RetryView`/ping), SASL/SCRAM against a secured
   server, Hot Rod URI `fromUri`, and multi-server seed failover.
 - Full run: `ctest --test-dir build --output-on-failure` → **100% pass, 21/21**
-  (1 unit + 20 integration suites) — verified end-to-end this session.
+  (1 unit + 20 integration suites) — last full end-to-end run 2026-10-19; unit
+  suite re-verified 2026-11-12 (266 pass) after the mutual-TLS/URI changes.
 - **Concurrency validated (2026-09-25):** the concurrent suites pass 8/8
   (incl. `ConcurrentWithFailover`), and a ThreadSanitizer run (`build-tsan/`)
   reports **no races in production code** — slice-4's `stateMutex_`/`shared_ptr`
