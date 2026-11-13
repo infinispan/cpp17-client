@@ -123,6 +123,15 @@ INSTANTIATE_TEST_SUITE_P(
         return n;
     });
 
+// PLAIN (RFC 4616) is offered by infinispan-auth.xml alongside the SCRAM family and
+// uses the same username+password, so it reuses the round-trip fixture — no new
+// server. (The handshake runs over a plaintext socket here; production use of PLAIN
+// should be over TLS, as the client docs note.)
+INSTANTIATE_TEST_SUITE_P(
+    Plain, AuthMechanismRoundTrip,
+    ::testing::Values("PLAIN"),
+    [](const ::testing::TestParamInfo<std::string>& info) { return info.param; });
+
 // 2. Wrong password: the SASL handshake fails at connect() time.
 TEST(AuthIntegrationTest, WrongPasswordThrowsAtConnect) {
     RemoteCache cache(AuthServerEnvironment::host, AuthServerEnvironment::port);

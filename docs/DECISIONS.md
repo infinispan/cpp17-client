@@ -1363,3 +1363,63 @@ deferred (needs server realms/token issuer; see STATUS backlog), as with mutual 
 
 **Deferred:** GSSAPI/GS2-KRB5 (needs MIT krb5/Heimdal + multi-round GSS exchange),
 DIGEST-MD5 (obsolete). SASL QOP/`sasl_properties.*` not wired.
+
+## 2026-11-13 — Integration coverage: mutual TLS, SASL PLAIN, SASL EXTERNAL
+
+**What:** Added Docker-backed, end-to-end integration tests for three features
+that previously had unit coverage only, closing two STATUS backlog items (mutual
+TLS, non-SCRAM SASL — all but OAUTHBEARER). One integration-coverage change set:
+- **PLAIN** — no new infra. `infinispan-auth.xml` already offers PLAIN alongside
+  the SCRAM family and uses the same plain-text realm, so PLAIN reuses the existing
+  `AuthMechanismRoundTrip` fixture via a second `INSTANTIATE_TEST_SUITE_P` (now 7
+  `AuthIntegrationTests`).
+- **Mutual TLS** — new `MutualTlsIntegrationTest` (suite
+  `MutualTlsIntegrationTests`) against `test-configs/infinispan-mtls.xml`
+  (require-ssl-client-auth, client-CA truststore, **no SASL**). Cases: programmatic
+  `setTls(cert/key)` round-trip, `hotrods://` URI with `client_cert_file`/
+  `client_key_file` round-trip, and a no-client-cert rejection.
+- **EXTERNAL** — new `ExternalAuthIntegrationTest` (suite
+  `ExternalAuthIntegrationTests`) against `test-configs/infinispan-external.xml`
+  (the mutual-TLS realm + `<truststore-realm/>` + SASL EXTERNAL). Cases:
+  programmatic `setAuthentication({mechanism="EXTERNAL"})` + mutual TLS round-trip,
+  and the same via a `hotrods://` URI with `sasl_mechanism=EXTERNAL`.
+
+One parameterized start script (`scripts/start_infinispan_mtls.sh [config]`) serves
+both TLS configs; `scripts/gen-test-certs.sh` now also emits the integration client
+identity (`client.pem`/`client.key`) and the server truststore bundle
+(`client-truststore.pem`). Fixtures are committed. New ctest labels:
+`mutual-tls` (both new suites), plus `auth`+`tls` on the EXTERNAL suite.
+
+**Why it matters / gotchas discovered while wiring the server side:**
+
+1. **`<truststore-realm/>` trusts *specific client certificates*, not just the
+   CA.** With a CA-only PEM truststore the pure-mTLS endpoint (no realm) accepted
+   our client cert fine, but the EXTERNAL endpoint rejected the TLS handshake with
+   `tlsv1.3 alert certificate unknown` (OpenSSL `0A000416`, SSL alert 46). Root
+   cause confirmed against Infinispan's own harness: `CertificateAuthority.export
+   Certificates` stores each **leaf** cert (`getCertificateChain()[0]`) as a
+   truststore entry, not the issuing CA. Fix: the committed server truststore is a
+   **bundle of the client leaf cert + its CA** (`client-truststore.pem`) — the leaf
+   entry satisfies the truststore-realm's exact-cert trust, and the CA lets the
+   pure-mTLS trust manager validate the chain too. One bundle serves both configs.
+
+2. **TLS 1.3 reports a required-but-missing client cert *after* the handshake,
+   not at connect().** With `require-ssl-client-auth`, a client that presents no
+   cert still sees `SSL_connect()` succeed under TLS 1.3 — the server's
+   `certificate required` alert arrives post-handshake, surfacing on the first
+   read/op. So the no-client-cert test asserts an exception across connect()+op
+   (the `AuthIntegrationTest.NoCredentialsFails` pattern), not `EXPECT_THROW(connect)`.
+   (`openssl s_client ... <<< Q` masks this: it verifies only the *server* cert and
+   quits before reading the alert, so it looks like success.)
+
+3. **`require-ssl-client-auth` is valid on the single-port `<endpoint>`** (it is a
+   `protocol-connector` base attribute in the 16.0 server schema), and Infinispan
+   **auto-detects a PEM truststore** (`password=""` per the schema) — no PKCS12
+   needed for the client-trust material.
+
+**Authoritative references used (per AGENTS.md):** Infinispan server tests
+`AuthenticationCertIT` + `security/trustrealm.xml` + `endpoints/auth-tls-external.xml`
+(realm/endpoint shape), and the 16.0 server XSD (attribute placement, PEM detection).
+
+**Deferred:** OAUTHBEARER integration (needs a token issuer/realm — Keycloak or a
+static-JWT public key + pre-minted token); it remains unit-only. See STATUS backlog.

@@ -1,0 +1,78 @@
+<infinispan xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="urn:infinispan:config:16.0 https://infinispan.org/schemas/infinispan-config-16.0.xsd
+                          urn:infinispan:server:16.0 https://infinispan.org/schemas/infinispan-server-16.0.xsd"
+      xmlns="urn:infinispan:config:16.0"
+      xmlns:server="urn:infinispan:server:16.0">
+
+   <cache-container name="default" statistics="true">
+      <!-- SASL EXTERNAL over mutual TLS: the client's identity is derived from its
+           TLS certificate (truststore-realm), authenticated via the EXTERNAL SASL
+           mechanism. No cache-container <authorization> (RBAC), so any trusted cert
+           identity may use caches. Mirrors Infinispan's own AuthenticationCertIT
+           (trustrealm.xml + auth-tls-external endpoint). -->
+
+      <transport cluster="${infinispan.cluster.name:cluster}" stack="${infinispan.cluster.stack:tcp}"/>
+
+      <distributed-cache-configuration name="org.infinispan.DIST_SYNC" mode="SYNC">
+         <encoding media-type="application/octet-stream"/>
+      </distributed-cache-configuration>
+
+      <!-- Pre-defined cache the EXTERNAL integration test targets. -->
+      <distributed-cache name="externalcache" mode="SYNC">
+         <encoding media-type="application/octet-stream"/>
+      </distributed-cache>
+   </cache-container>
+
+   <server xmlns="urn:infinispan:server:16.0">
+      <interfaces>
+         <interface name="public">
+            <inet-address value="${infinispan.bind.address:0.0.0.0}"/>
+         </interface>
+      </interfaces>
+
+      <socket-bindings default-interface="public" port-offset="${infinispan.socket.binding.port-offset:0}">
+         <socket-binding name="default" port="${infinispan.bind.port:11222}"/>
+      </socket-bindings>
+
+      <security>
+         <security-realms>
+            <!-- Same server identity + client truststore as the mutual-TLS realm,
+                 PLUS a <truststore-realm/>: once a client cert is matched in the
+                 truststore, the realm maps its subject (CN=test-client) to an
+                 authenticated identity, which the EXTERNAL SASL mechanism then uses.
+                 The truststore-realm trusts *specific client certificates*, so the
+                 bundle must carry the client leaf cert, not just its CA (matching
+                 Infinispan's own harness, which stores each leaf). server.p12 and
+                 client-truststore.pem are mounted by start_infinispan_mtls.sh. -->
+            <security-realm name="tls">
+               <server-identities>
+                  <ssl>
+                     <keystore path="server.p12"
+                               relative-to="infinispan.server.config.path"
+                               password="password"
+                               alias="server"
+                               type="PKCS12"/>
+                     <truststore path="client-truststore.pem"
+                                 relative-to="infinispan.server.config.path"
+                                 password=""/>
+                  </ssl>
+               </server-identities>
+               <truststore-realm/>
+            </security-realm>
+         </security-realms>
+      </security>
+
+      <endpoints>
+         <endpoint socket-binding="default" security-realm="tls" require-ssl-client-auth="true">
+            <hotrod-connector>
+               <authentication>
+                  <sasl mechanisms="EXTERNAL" server-name="infinispan"/>
+               </authentication>
+            </hotrod-connector>
+            <!-- Single-port endpoint requires a REST route even though these
+                 tests only exercise Hot Rod SASL EXTERNAL over mutual TLS. -->
+            <rest-connector/>
+         </endpoint>
+      </endpoints>
+   </server>
+</infinispan>

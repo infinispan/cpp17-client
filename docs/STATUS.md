@@ -4,7 +4,7 @@
 > If any other doc disagrees with this file, this file wins. Point-in-time
 > snapshots live in [`archive/`](archive/) and are historical only.
 >
-> **Last updated:** 2026-11-12
+> **Last updated:** 2026-11-13
 
 ---
 
@@ -41,7 +41,8 @@ _The 1–3 concrete things to do next. Keep this short and current._
    (two `TODO`s in `src/operations/RemoteCache.cpp`).
 
 _Recently shipped (detail in "Working and shipped" + [`DECISIONS.md`](DECISIONS.md)):
-non-SCRAM SASL (PLAIN/EXTERNAL/OAUTHBEARER) (#10, 2026-11-12), mutual TLS (PEM
+Docker integration coverage for mutual TLS + SASL PLAIN + SASL EXTERNAL
+(2026-11-13), non-SCRAM SASL (PLAIN/EXTERNAL/OAUTHBEARER) (#10, 2026-11-12), mutual TLS (PEM
 client cert/key) + PEM-honest TLS URI keys (`ca_file`,
 `client_cert_file`/`client_key_file`; Java keystore keys now rejected with a
 redirect) (#18, 2026-11-12), server-authenticated TLS for `hotrods://` (#18,
@@ -62,15 +63,11 @@ pull from here next. Step numbers follow
   `BULK_GET` (0x1F, iterator-style).
 
 **Other known work (not roadmap steps):**
-- [ ] **Mutual-TLS integration coverage** — client cert/key is unit-tested
-  (in-process OpenSSL server requiring a client cert) but not yet covered by the
-  Docker `TlsIntegrationTest`, which needs the Infinispan server configured to
-  require/verify client certs (extend `scripts/start_infinispan_tls.sh` +
-  `gen-test-certs.sh` already emits the unit client cert).
-- [ ] **Non-SCRAM SASL integration coverage** — PLAIN/EXTERNAL/OAUTHBEARER are
-  unit-tested against fake servers but not end-to-end: PLAIN needs a server SASL
-  realm offering it; EXTERNAL needs mutual TLS + a cert→identity mapping;
-  OAUTHBEARER needs a token issuer/realm. `AuthIntegrationTest` covers SCRAM only.
+- [ ] **OAUTHBEARER integration coverage** — the last non-SCRAM SASL mechanism
+  without an end-to-end Docker test. Needs real token infra (a token-realm backed
+  by Keycloak, or a static-JWT public key + a pre-minted token). PLAIN, EXTERNAL,
+  and mutual TLS integration coverage shipped 2026-11-13 (see "Working and
+  shipped"); OAUTHBEARER is still unit-tested against a fake server only.
 - [ ] **Benchmark the multiplexing path** — the async rewrite targets 5–10×
   concurrent throughput; unmeasured so far.
 - [ ] **Code cleanup:** read header "other params" when `paramCount > 0`
@@ -198,24 +195,30 @@ Rod URI `fromUri` (#9), multi-server seed list + failover (#12)._
   that stalls a subprocess fails fast instead of hanging the whole CI job. See
   [`DECISIONS.md`](DECISIONS.md).
 
-**Test status:** **284 unit** (verified 2026-11-12) + **96 integration** (20
-suites, verified 2026-10-19), all passing. This is the one authoritative count —
+**Test status:** **284 unit** (verified 2026-11-12) + **107 integration** (23
+suites, verified 2026-11-13), all passing. This is the one authoritative count —
 other docs describe *what* is covered rather than repeating totals. Counts read
 from the built test binaries via `--gtest_list_tests`, so they match what actually
-runs. (The +34 unit tests since 2026-11-09 are the mutual-TLS handshake cases, the
-PEM-honest URI-key parsing/redirect cases, and the non-SCRAM SASL mechanism cases
-— pure initial-response builders + PLAIN/EXTERNAL/OAUTHBEARER driver flows.)
+runs. (The +6 integration tests on 2026-11-13 are the mutual-TLS round-trip/URI/
+no-cert-rejected cases — `MutualTlsIntegrationTests` — the SASL EXTERNAL
+cert-identity round-trip + URI cases — `ExternalAuthIntegrationTests` — and a PLAIN
+case added to `AuthIntegrationTests`.)
 - Unit (`./build/unit_tests`, <1s) — wire primitives/headers, consistent hashing,
   server-selection/retry helpers, the SASL handshake (SCRAM family +
   PLAIN/EXTERNAL/OAUTHBEARER, against fake servers), the TLS handshake (server-auth
   + mutual TLS, in-process OpenSSL server), and the Hot Rod URI parser.
 - Integration (`ctest`, spins up Docker Infinispan single-server + multi-node
   clusters; also green on Linux CI) — CRUD + metadata/CAS, topology & hash-aware
-  routing, keyed/keyless retry (`RetryView`/ping), SASL/SCRAM against a secured
-  server, Hot Rod URI `fromUri`, and multi-server seed failover.
-- Full run: `ctest --test-dir build --output-on-failure` → **100% pass, 21/21**
-  (1 unit + 20 integration suites) — last full end-to-end run 2026-10-19; unit
-  suite re-verified 2026-11-12 (266 pass) after the mutual-TLS/URI changes.
+  routing, keyed/keyless retry (`RetryView`/ping), SASL against a secured server
+  (SCRAM family + PLAIN via `AuthIntegrationTests`; EXTERNAL over mutual TLS via
+  `ExternalAuthIntegrationTests`), server-authenticated TLS (`TlsIntegrationTests`)
+  and mutual TLS (`MutualTlsIntegrationTests`), Hot Rod URI `fromUri`, and
+  multi-server seed failover.
+- Full run: `ctest --test-dir build --output-on-failure` covers **24 suites**
+  (1 unit + 23 integration). Last full end-to-end run 2026-10-19 (100% pass at the
+  then-current 21 suites); unit suite re-verified 2026-11-12 (284 pass), and the
+  `Auth`/`Tls`/`MutualTls`/`ExternalAuth` integration suites verified 2026-11-13
+  (7 + 5 + 3 + 2 pass) after the integration-coverage changes.
 - **Concurrency validated (2026-09-25):** the concurrent suites pass 8/8
   (incl. `ConcurrentWithFailover`), and a ThreadSanitizer run (`build-tsan/`)
   reports **no races in production code** — slice-4's `stateMutex_`/`shared_ptr`
