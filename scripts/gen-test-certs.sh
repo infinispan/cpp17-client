@@ -84,6 +84,25 @@ openssl pkcs12 -export -out "$INT_DIR/server.p12" \
     -inkey "$TMP/int-server.key" -in "$TMP/int-server.pem" \
     -name server -passout "pass:$P12_PASS" 2>/dev/null
 
+# Client identity for the mutual-TLS / EXTERNAL integration tests (MutualTls*,
+# ExternalAuth* suites). A client CA signs a client leaf (client.pem + client.key,
+# PEM) — what the client presents. The server's PEM truststore
+# (client-truststore.pem) is a bundle of the client LEAF cert followed by its CA:
+#   - the leaf entry is what Infinispan's <truststore-realm/> (EXTERNAL) matches to
+#     derive the identity — the realm trusts specific client certificates, exactly as
+#     Infinispan's own test harness does (CertificateAuthority.exportCertificates
+#     stores each leaf, getCertificateChain()[0], not the CA);
+#   - the CA lets the pure-mTLS endpoint (no realm) validate the chain as well.
+# Infinispan auto-detects the PEM truststore (password=""). The client CA *private*
+# key is discarded, like the other CAs; the CA cert itself is not committed on its
+# own — it lives only inside the committed truststore bundle.
+make_ca   "$TMP/int-clientca.pem"  "$TMP/int-clientca.key" "Integration Client CA"
+make_leaf "$TMP/int-clientca.pem"  "$TMP/int-clientca.key" \
+          "$INT_DIR/client.key"    "$INT_DIR/client.pem" \
+          "test-client" "DNS:test-client"
+chmod 600 "$INT_DIR/client.key"
+cat "$INT_DIR/client.pem" "$TMP/int-clientca.pem" > "$INT_DIR/client-truststore.pem"
+
 echo ">> done."
 echo "   Regenerated fixtures are NOT byte-identical to the committed ones (fresh"
 echo "   random keys/serials). 'git add' them only if you mean to replace the set."

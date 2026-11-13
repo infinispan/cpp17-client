@@ -363,6 +363,30 @@ if(GTest_FOUND)
             # Note: NOT gtest_main - we provide our own main()
     )
 
+    # Mutual TLS integration tests (client cert required, no SASL; #10 coverage)
+    add_executable(mutual_tls_integration_tests
+        tests/integration/MutualTlsIntegrationTest.cpp
+    )
+
+    target_link_libraries(mutual_tls_integration_tests
+        PRIVATE
+            hotrod-client
+            GTest::gtest
+            # Note: NOT gtest_main - we provide our own main()
+    )
+
+    # SASL EXTERNAL over mutual TLS integration tests (cert identity; #10 coverage)
+    add_executable(external_auth_integration_tests
+        tests/integration/ExternalAuthIntegrationTest.cpp
+    )
+
+    target_link_libraries(external_auth_integration_tests
+        PRIVATE
+            hotrod-client
+            GTest::gtest
+            # Note: NOT gtest_main - we provide our own main()
+    )
+
     target_link_libraries(fromuri_integration_tests
         PRIVATE
             hotrod-client
@@ -391,6 +415,8 @@ if(GTest_FOUND)
     add_test(NAME MultiSeedIntegrationTests COMMAND multiseed_integration_tests)
     add_test(NAME AuthIntegrationTests COMMAND auth_integration_tests)
     add_test(NAME TlsIntegrationTests COMMAND tls_integration_tests)
+    add_test(NAME MutualTlsIntegrationTests COMMAND mutual_tls_integration_tests)
+    add_test(NAME ExternalAuthIntegrationTests COMMAND external_auth_integration_tests)
 
     # Set working directory so scripts can be found
     set_tests_properties(PingIntegrationTests PROPERTIES
@@ -477,6 +503,14 @@ if(GTest_FOUND)
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         LABELS "integration;docker;tls"
     )
+    set_tests_properties(MutualTlsIntegrationTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        LABELS "integration;docker;tls;mutual-tls"
+    )
+    set_tests_properties(ExternalAuthIntegrationTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        LABELS "integration;docker;auth;tls;mutual-tls"
+    )
 
     # Fail fast if a suite hangs (e.g. a server/CLI-version regression stalls a
     # subprocess) instead of letting one stuck test burn the whole CI job budget.
@@ -489,6 +523,7 @@ if(GTest_FOUND)
         ConcurrentClientsTests HashAwareRoutingIntegrationTests ConcurrentMultiServerTests
         RetryViewIntegrationTests PingRetryIntegrationTests MultiSeedIntegrationTests
         AuthIntegrationTests TlsIntegrationTests
+        MutualTlsIntegrationTests ExternalAuthIntegrationTests
         PROPERTIES TIMEOUT 300
     )
     endif()  # NOT WIN32 (integration tests)
